@@ -117,7 +117,7 @@ def test_pack_submission_creates_valid_zip(tmp_path):
 
     zip_path = tmp_path / "test_submission.zip"
     res = subprocess.run([
-        "/dist_home/suryansh/miniforge3/envs/outliers/bin/python",
+        sys.executable,
         "scripts/pack_submission.py",
         "--matching", str(matching_file),
         "--candidate", str(candidate_file),
@@ -132,11 +132,73 @@ def test_pack_submission_creates_valid_zip(tmp_path):
         namelist = zf.namelist()
         assert "output/matching_results.tsv" in namelist
         assert "output/candidate_pairs.tsv" in namelist
+        assert "code/business_entity_resolution/run_entity_resolution.py" in namelist
         assert "code/business_entity_resolution/README.md" in namelist
         assert "code/business_entity_resolution/requirements.txt" in namelist
         assert "Documentation_template.md" in namelist
         # Verify src files exist inside code/business_entity_resolution/src/
         assert any(n.startswith("code/business_entity_resolution/src/") for n in namelist)
+
+        readme_text = zf.read("code/business_entity_resolution/README.md").decode("utf-8")
+        assert "run_entity_resolution.py" in readme_text
+        assert "--train-dir" in readme_text
+        assert "--test-dir" in readme_text
+
+
+def test_submission_packager_dry_run_nonexistent_files_fails(tmp_path):
+    res = subprocess.run([
+        sys.executable,
+        "scripts/pack_submission.py",
+        "--matching", str(tmp_path / "nonexistent_matching.tsv"),
+        "--candidate", str(tmp_path / "nonexistent_candidates.tsv"),
+        "--dry-run"
+    ], capture_output=True, text=True)
+    assert res.returncode == 1, f"Expected returncode 1 for nonexistent files, got {res.returncode}"
+    assert "not found" in res.stderr
+    assert not (tmp_path / "outliers_submission.zip").exists()
+
+
+def test_pack_submission_fails_on_invalid_matching_file(tmp_path):
+    test_dir = tmp_path / "test_dir"
+    test_dir.mkdir(parents=True)
+    test_s1 = pd.DataFrame({
+        "entity_id": ["S1-01", "S1-02"],
+        "business_name": ["Acme Tools", "Solo Corp"],
+        "business_address": ["123 Main St 10001", "55 Park Ave 10002"],
+        "country": ["US", "US"]
+    })
+    test_s1.to_csv(test_dir / "test_source1.tsv", sep="\t", index=False)
+
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True)
+
+    # Invalid matching file: wrong column headers
+    matching_file = out_dir / "matching_results.tsv"
+    matching_file.write_text(
+        "invalid_header_1\tinvalid_header_2\n"
+        "S1-01\tS2-11\n",
+        encoding="utf-8"
+    )
+    candidate_file = out_dir / "candidate_pairs.tsv"
+    candidate_file.write_text(
+        "source1_entity_id\tcandidate_entity_ids\n"
+        "S1-01\tS2-11\n"
+        "S1-02\t\n",
+        encoding="utf-8"
+    )
+
+    zip_path = tmp_path / "should_not_exist.zip"
+    res = subprocess.run([
+        sys.executable,
+        "scripts/pack_submission.py",
+        "--matching", str(matching_file),
+        "--candidate", str(candidate_file),
+        "--test-dir", str(test_dir),
+        "--output-zip", str(zip_path),
+    ], capture_output=True, text=True)
+
+    assert res.returncode == 1, f"Expected returncode 1 on invalid matching, got {res.returncode}. Output:\n{res.stdout}\n{res.stderr}"
+    assert not zip_path.exists()
 
 
 def test_run_entity_resolution_e2e(tmp_path):
@@ -213,7 +275,7 @@ def test_run_entity_resolution_e2e(tmp_path):
 
     zip_file = tmp_path / "submission_out.zip"
     res = subprocess.run([
-        "/dist_home/suryansh/miniforge3/envs/outliers/bin/python",
+        sys.executable,
         "scripts/run_entity_resolution.py",
         "--train-dir", str(train_dir),
         "--test-dir", str(test_dir),
