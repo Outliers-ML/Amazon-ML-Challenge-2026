@@ -99,3 +99,5 @@ runs/
 .idea/
 *.swp
 *.swo
+student_resource/dataset/
+output/
