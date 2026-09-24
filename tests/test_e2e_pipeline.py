@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 import numpy as np
@@ -11,18 +12,21 @@ from src.pipeline.er_trainer import ERModelTrainer, optimize_f05_threshold
 
 
 def test_submission_packager_dry_run(tmp_path):
-    # Create valid synthetic outputs in output/
-    out_dir = Path("output")
-    out_dir.mkdir(exist_ok=True)
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True)
+    (out_dir / "matching_results.tsv").write_text("source1_entity_id\tmatched_entity_ids\nS1-01\tS2-02\n", encoding="utf-8")
+    (out_dir / "candidate_pairs.tsv").write_text("source1_entity_id\tcandidate_entity_ids\nS1-01\tS2-02\n", encoding="utf-8")
 
-    # We will test pack_submission with --dry-run
     res = subprocess.run([
-        "/dist_home/suryansh/miniforge3/envs/outliers/bin/python",
+        sys.executable,
         "scripts/pack_submission.py",
+        "--matching", str(out_dir / "matching_results.tsv"),
+        "--candidate", str(out_dir / "candidate_pairs.tsv"),
+        "--skip-validation",
         "--dry-run"
     ], capture_output=True, text=True)
-    # Output should execute without python traceback
-    assert res.returncode in [0, 1]
+    assert res.returncode == 0, f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert "DRY-RUN" in res.stdout
 
 
 def test_e2e_toy_dataset_flow(tmp_path):
