@@ -1,0 +1,37 @@
+# ==========================================
+# CatBoost Baseline Configuration
+# ==========================================
+
+experiment_name: "catboost_baseline"
+
+paths:
+  data_dir: "data"
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  checkpoints_dir: "checkpoints"
+  submissions_dir: "submissions"
+  logs_dir: "logs"
+
+data:
+  train_file: "train.csv"
+  test_file: "test.csv"
+  target_col: "target"
+  id_col: "id"
+
+model:
+  model_type: "catboost"
+  early_stopping_rounds: 50
+  num_boost_round: 1500
+  params:
+    learning_rate: 0.04
+    depth: 6
+    l2_leaf_reg: 3.0
+    random_seed: 42
+    task_type: "GPU"
+
+train:
+  seed: 42
+  n_splits: 5
+  stratified: true
+  metric: "f1_macro"
+  device: "cuda"
