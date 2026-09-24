@@ -207,3 +207,88 @@ def test_extract_pairs_matrix():
     # Empty input handling
     empty_mat = extractor.extract_pairs_matrix([], [], [], [])
     assert empty_mat.shape == (0, len(extractor.feature_names))
+
+
+def test_name_in_address_cross_short_names():
+    extractor = PairwiseFeatureExtractor()
+    cross_idx = extractor.feature_names.index("name_in_address_cross")
+
+    # Short name "St" should not spuriously match "Main Street" or "Austin"
+    r1 = {"entity_id": "S1-1", "business_name": "St", "business_address": "500 Pine Rd"}
+    r2 = {"entity_id": "S2-1", "business_name": "Bakery", "business_address": "123 Main Street, Austin TX"}
+    feats1 = extractor.extract_pair_features(r1, r2)
+    assert feats1[cross_idx] == 0.0
+
+    # Short name "In" should not spuriously match "Main" or "Austin"
+    r3 = {"entity_id": "S1-2", "business_name": "In", "business_address": "500 Pine Rd"}
+    r4 = {"entity_id": "S2-2", "business_name": "Cafe", "business_address": "456 Austin Ave"}
+    feats2 = extractor.extract_pair_features(r3, r4)
+    assert feats2[cross_idx] == 0.0
+
+    # Reverse direction: target short name against S1 address
+    r5 = {"entity_id": "S1-3", "business_name": "Hardware", "business_address": "789 Main Street, Austin TX"}
+    r6 = {"entity_id": "S2-3", "business_name": "St", "business_address": "100 Other Rd"}
+    feats3 = extractor.extract_pair_features(r5, r6)
+    assert feats3[cross_idx] == 0.0
+
+    # Short name "Go" should not spuriously match words like "Mango"
+    r7 = {"entity_id": "S1-4", "business_name": "Go", "business_address": "100 Elm St"}
+    r8 = {"entity_id": "S2-4", "business_name": "Shop", "business_address": "123 Mango Street"}
+    feats4 = extractor.extract_pair_features(r7, r8)
+    assert feats4[cross_idx] == 0.0
+
+
+def test_extract_pairs_matrix_mismatched_lengths():
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [{"entity_id": "S1-1", "business_name": "A", "business_address": "1"}]
+    target_rows = [
+        {"entity_id": "S2-1", "business_name": "B", "business_address": "2"},
+        {"entity_id": "S2-2", "business_name": "C", "business_address": "3"},
+    ]
+
+    # Mismatched target_rows length
+    with pytest.raises(ValueError, match="target_rows length"):
+        extractor.extract_pairs_matrix(s1_rows, target_rows)
+
+    # Mismatched ranks length
+    with pytest.raises(ValueError, match="ranks length"):
+        extractor.extract_pairs_matrix(s1_rows, [target_rows[0]], ranks=[1, 2])
+
+    # Mismatched scores length
+    with pytest.raises(ValueError, match="scores length"):
+        extractor.extract_pairs_matrix(s1_rows, [target_rows[0]], scores=[0.5, 0.8])
+
+
+def test_extract_pairs_matrix_cache_key_entity_id(monkeypatch):
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [
+        {"entity_id": "S1-1", "business_name": "Acme", "business_address": "100 Main St"},
+        {"entity_id": "S1-1", "business_name": "Acme", "business_address": "100 Main St"},
+    ]
+    # Distinct dictionary objects sharing entity_id
+    t1 = {"entity_id": "S2-1", "business_name": "Target Store", "business_address": "200 Market St"}
+    t2 = {"entity_id": "S2-1", "business_name": "Target Store", "business_address": "200 Market St"}
+    assert t1 is not t2
+    target_rows = [t1, t2]
+
+    name_call_count = 0
+    orig_norm_name = extractor._get_normalized_name
+
+    def mock_norm_name(row):
+        nonlocal name_call_count
+        name_call_count += 1
+        return orig_norm_name(row)
+
+    monkeypatch.setattr(extractor, "_get_normalized_name", mock_norm_name)
+
+    matrix = extractor.extract_pairs_matrix(s1_rows, target_rows)
+    assert matrix.shape == (2, len(extractor.feature_names))
+    # Normalized once for S1-1 and once for S2-1 -> 2 calls
+    assert name_call_count == 2
+
+    # Fallback when entity_id is absent
+    r_no_id_1 = {"business_name": "Shop A", "business_address": "100 Main St"}
+    r_no_id_2 = {"business_name": "Shop B", "business_address": "200 Main St"}
+    mat_no_id = extractor.extract_pairs_matrix([r_no_id_1], [r_no_id_2])
+    assert mat_no_id.shape == (1, len(extractor.feature_names))
+

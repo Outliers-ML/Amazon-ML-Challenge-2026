@@ -4,7 +4,8 @@ Extracts discriminative string similarity and address compatibility metrics usin
 C-accelerated RapidFuzz and structured token comparison.
 """
 
-from typing import Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional
 import numpy as np
 import rapidfuzz.distance.JaroWinkler as JaroWinkler
 import rapidfuzz.distance.Levenshtein as Levenshtein
@@ -121,9 +122,15 @@ class PairwiseFeatureExtractor:
 
         # 3. Cross & Relational
         cross_match = 0.0
-        if cln1 and (cln1 in raw_a2 or cln1 in a2):
+        if len(cln1) >= 3 and (
+            re.search(rf"\b{re.escape(cln1)}\b", raw_a2)
+            or re.search(rf"\b{re.escape(cln1)}\b", a2)
+        ):
             cross_match = 1.0
-        elif cln2 and (cln2 in raw_a1 or cln2 in a1):
+        elif len(cln2) >= 3 and (
+            re.search(rf"\b{re.escape(cln2)}\b", raw_a1)
+            or re.search(rf"\b{re.escape(cln2)}\b", a1)
+        ):
             cross_match = 1.0
 
         target_id_upper = target_id.strip().upper()
@@ -183,11 +190,21 @@ class PairwiseFeatureExtractor:
         scores: Optional[List[float]] = None,
     ) -> np.ndarray:
         n = len(s1_rows)
+        if len(target_rows) != n:
+            raise ValueError(
+                f"target_rows length ({len(target_rows)}) must match s1_rows length ({n})"
+            )
+        if ranks is not None and len(ranks) != n:
+            raise ValueError(
+                f"ranks length ({len(ranks)}) must match s1_rows length ({n})"
+            )
+        if scores is not None and len(scores) != n:
+            raise ValueError(
+                f"scores length ({len(scores)}) must match s1_rows length ({n})"
+            )
+
         if n == 0:
             return np.empty((0, len(self.feature_names)), dtype=np.float32)
-
-        if len(target_rows) != n:
-            raise ValueError(f"s1_rows ({n}) and target_rows ({len(target_rows)}) must have same length")
 
         ranks_list = ranks if ranks is not None else [1] * n
         scores_list = scores if scores is not None else [0.0] * n
@@ -195,17 +212,17 @@ class PairwiseFeatureExtractor:
         matrix = np.empty((n, len(self.feature_names)), dtype=np.float32)
 
         # Caching normalized objects for repeated queries / candidates
-        name_cache: Dict[int, NormalizedName] = {}
-        addr_cache: Dict[int, NormalizedAddress] = {}
+        name_cache: Dict[Any, NormalizedName] = {}
+        addr_cache: Dict[Any, NormalizedAddress] = {}
 
         def get_cached_name(row: Dict) -> NormalizedName:
-            key = id(row)
+            key = row.get("entity_id") or id(row)
             if key not in name_cache:
                 name_cache[key] = self._get_normalized_name(row)
             return name_cache[key]
 
         def get_cached_addr(row: Dict) -> NormalizedAddress:
-            key = id(row)
+            key = row.get("entity_id") or id(row)
             if key not in addr_cache:
                 addr_cache[key] = self._get_normalized_address(row)
             return addr_cache[key]
@@ -213,8 +230,8 @@ class PairwiseFeatureExtractor:
         for i in range(n):
             s1 = s1_rows[i]
             t = target_rows[i]
-            r = ranks_list[i] if i < len(ranks_list) else 1
-            s = scores_list[i] if i < len(scores_list) else 0.0
+            r = ranks_list[i]
+            s = scores_list[i]
 
             s1_n = get_cached_name(s1)
             s1_a = get_cached_addr(s1)
