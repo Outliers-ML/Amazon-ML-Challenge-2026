@@ -67,3 +67,81 @@ def test_er_model_trainer_fit_and_predict():
     probs = model.predict_proba(X)[:, 1]
     assert len(probs) == N
     assert np.all((probs >= 0.0) & (probs <= 1.0))
+
+
+def test_macro_f05_exact_one():
+    # Perfect match without floating-point truncation error (+1e-9)
+    gt = {
+        "S1-1": {"S2-A", "S2-B"},
+        "S1-2": set(),
+    }
+    preds = {
+        "S1-1": ["S2-A", "S2-B"],
+        "S1-2": [],
+    }
+    score = compute_macro_f05(gt, preds)
+    assert score == 1.0
+
+
+def test_macro_f05_sequence_ground_truth():
+    # Sequence-valued (list/tuple) ground truth conversion
+    gt = {"S1-1": ["S2-1"]}
+    preds = {"S1-1": ["S2-1"]}
+    score = compute_macro_f05(gt, preds)
+    assert score == 1.0
+
+    preds_wrong = {"S1-1": ["S2-2"]}
+    assert compute_macro_f05(gt, preds_wrong) == 0.0
+
+
+def test_threshold_optimizer_plateau_midpoint():
+    # Plateau across [0.50, 0.95]: midpoint should be selected (~0.725) rather than lower bound 0.50
+    s1_ids = ["S1-1", "S1-2"]
+    cand_ids = ["S2-1", "S2-2"]
+    probs = np.array([1.0, 0.1])
+    gt = {"S1-1": {"S2-1"}, "S1-2": set()}
+
+    best_tau, best_score = optimize_f05_threshold(
+        s1_ids, cand_ids, probs, gt, tau_steps=25, min_tau=0.50, max_tau=0.95
+    )
+    assert best_score == 1.0
+    assert best_tau > 0.65
+    assert abs(best_tau - 0.725) < 1e-2
+
+
+def test_threshold_optimizer_mismatched_lengths():
+    s1_ids = ["S1-1", "S1-2"]
+    cand_ids = ["S2-1"]
+    probs = np.array([0.9, 0.1])
+    gt = {"S1-1": {"S2-1"}}
+
+    with pytest.raises(ValueError, match="Mismatched input lengths"):
+        optimize_f05_threshold(s1_ids, cand_ids, probs, gt)
+
+
+def test_er_model_trainer_validation_split_and_predict_val_proba():
+    np.random.seed(42)
+    N = 100
+    X = np.random.randn(N, 22).astype(np.float32)
+    y = (X[:, 0] > 0.0).astype(np.int32)
+    s1_groups = [f"S1-{i // 4}" for i in range(N)]
+
+    trainer = ERModelTrainer(n_splits=3, seed=42)
+
+    with pytest.raises(RuntimeError, match="Model has not been trained yet"):
+        trainer.predict_val_proba(X)
+
+    trainer.train(X, y, s1_groups)
+
+    assert trainer.val_indices_ is not None
+    assert trainer.tr_indices_ is not None
+    assert len(trainer.val_indices_) > 0
+    assert len(trainer.tr_indices_) > 0
+    assert len(set(trainer.val_indices_) & set(trainer.tr_indices_)) == 0
+    assert len(trainer.val_indices_) + len(trainer.tr_indices_) == N
+
+    probs_val, val_idx = trainer.predict_val_proba(X)
+    assert np.array_equal(val_idx, trainer.val_indices_)
+    assert len(probs_val) == len(trainer.val_indices_)
+    assert np.all((probs_val >= 0.0) & (probs_val <= 1.0))
+
