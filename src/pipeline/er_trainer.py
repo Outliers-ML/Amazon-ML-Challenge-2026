@@ -94,15 +94,32 @@ class ERModelTrainer:
         X_arr = np.asarray(X)
         y_arr = np.asarray(y)
         gkf = GroupKFold(n_splits=self.n_splits)
-        tr_idx, val_idx = next(gkf.split(X_arr, y_arr, groups=s1_groups))
+        splits = list(gkf.split(X_arr, y_arr, groups=s1_groups))
+        tr_idx, val_idx = splits[0]
+        for t_idx, v_idx in splits:
+            if len(np.unique(y_arr[t_idx])) >= 2:
+                tr_idx, val_idx = t_idx, v_idx
+                if set(y_arr[v_idx]).issubset(set(y_arr[t_idx])):
+                    break
         self.tr_indices_ = tr_idx
         self.val_indices_ = val_idx
-        self.model.fit(
-            X_arr[tr_idx],
-            y_arr[tr_idx],
-            eval_set=[(X_arr[val_idx], y_arr[val_idx])],
-            callbacks=[lgb.early_stopping(50, verbose=False)],
+
+        can_eval = (
+            len(np.unique(y_arr[tr_idx])) >= 2
+            and set(y_arr[val_idx]).issubset(set(y_arr[tr_idx]))
+            and len(val_idx) > 0
         )
+        if can_eval:
+            self.model.fit(
+                X_arr[tr_idx],
+                y_arr[tr_idx],
+                eval_set=[(X_arr[val_idx], y_arr[val_idx])],
+                callbacks=[lgb.early_stopping(50, verbose=False)],
+            )
+        elif len(np.unique(y_arr[tr_idx])) >= 2:
+            self.model.fit(X_arr[tr_idx], y_arr[tr_idx])
+        else:
+            self.model.fit(X_arr, y_arr)
         return self.model
 
     def predict_val_proba(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

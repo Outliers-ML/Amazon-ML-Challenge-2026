@@ -8,6 +8,7 @@ numpy>=2.0.0
 pandas>=2.2.0
 scipy>=1.12.0
 scikit-learn>=1.5.0
+rapidfuzz>=3.0.0
 
 # Deep Learning & Multi-modal
 torch>=2.4.0
