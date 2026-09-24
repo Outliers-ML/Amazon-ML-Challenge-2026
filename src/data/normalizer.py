@@ -5,6 +5,7 @@ and structured token/anchor extraction (street numbers, postal codes).
 """
 
 from dataclasses import dataclass
+import math
 import re
 import unicodedata
 from typing import List, Optional
@@ -14,6 +15,8 @@ LEGAL_SUFFIXES = {
     "pvt", "private", "co", "company", "llp", "sa", "sarl", "sas", "eurl",
     "gmbh", "plc", "enterprises", "services"
 }
+
+NULL_STRINGS = {"", "nan", "none", "null", "<na>", "n/a"}
 
 @dataclass
 class NormalizedName:
@@ -30,6 +33,13 @@ class NormalizedAddress:
     postal_code: Optional[str]
     tokens: List[str]
 
+def _is_null(val: Optional[str]) -> bool:
+    if val is None:
+        return True
+    if isinstance(val, float) and math.isnan(val):
+        return True
+    return str(val).strip().lower() in NULL_STRINGS
+
 class TextNormalizer:
     def __init__(self) -> None:
         self.street_num_re = re.compile(r"\b(\d+[a-zA-Z]?)\b")
@@ -37,31 +47,75 @@ class TextNormalizer:
         self.punct_re = re.compile(r"[^\w\s]")
 
     def normalize_name(self, name: Optional[str]) -> NormalizedName:
-        if not name or str(name).strip() == "" or str(name) == "nan":
+        if _is_null(name):
             return NormalizedName(raw="", clean_name="", tokens=[], char_3grams=[])
         s = str(name).strip()
         s_norm = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("utf-8").lower()
+        if not s_norm.strip():
+            return NormalizedName(raw=s, clean_name="", tokens=[], char_3grams=[])
+
         s_clean = self.punct_re.sub(" ", s_norm)
         raw_tokens = s_clean.split()
-        filtered_tokens = [t for t in raw_tokens if t not in LEGAL_SUFFIXES and len(t) > 0]
-        clean_name = " ".join(filtered_tokens) if filtered_tokens else " ".join(raw_tokens)
+        if not raw_tokens:
+            return NormalizedName(raw=s, clean_name="", tokens=[], char_3grams=[])
+
+        filtered_tokens = [t for t in raw_tokens if t not in LEGAL_SUFFIXES]
+        final_tokens = filtered_tokens if filtered_tokens else raw_tokens
+        clean_name = " ".join(final_tokens)
         
-        compact = "".join(filtered_tokens)
-        char_3grams = [compact[i:i+3] for i in range(len(compact) - 2)] if len(compact) >= 3 else [compact]
-        return NormalizedName(raw=s, clean_name=clean_name, tokens=filtered_tokens, char_3grams=char_3grams)
+        compact = "".join(final_tokens)
+        if not compact:
+            char_3grams: List[str] = []
+        elif len(compact) < 3:
+            char_3grams = [compact]
+        else:
+            char_3grams = [compact[i:i+3] for i in range(len(compact) - 2)]
+
+        return NormalizedName(raw=s, clean_name=clean_name, tokens=final_tokens, char_3grams=char_3grams)
 
     def normalize_address(self, addr: Optional[str]) -> NormalizedAddress:
-        if not addr or str(addr).strip() == "" or str(addr) == "nan":
+        if _is_null(addr):
             return NormalizedAddress(raw="", clean_address="", street_number=None, postal_code=None, tokens=[])
         s = str(addr).strip()
         s_norm = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("utf-8").lower()
-        
-        postal_match = self.postal_re.search(s_norm)
-        postal_code = postal_match.group(1) if postal_match else None
+        if not s_norm.strip():
+            return NormalizedAddress(raw=s, clean_address="", street_number=None, postal_code=None, tokens=[])
 
-        street_match = self.street_num_re.search(s_norm)
-        street_number = street_match.group(1) if street_match else None
+        # Identify postal code first
+        postal_matches = list(self.postal_re.finditer(s_norm))
+        if postal_matches:
+            postal_match = postal_matches[-1]
+            postal_code: Optional[str] = postal_match.group(1)
+            p_start, p_end = postal_match.span()
+        else:
+            postal_code = None
+            p_start, p_end = -1, -1
+
+        # Extract street number excluding postal code span
+        standard_nums: List[str] = []
+        prefixed_nums: List[str] = []
+        for m in self.street_num_re.finditer(s_norm):
+            m_start, m_end = m.span()
+            if postal_code is not None and max(m_start, p_start) < min(m_end, p_end):
+                continue
+            if m_start >= 2 and s_norm[m_start - 1] == "-" and s_norm[m_start - 2].isalpha():
+                prefixed_nums.append(m.group(1))
+            else:
+                standard_nums.append(m.group(1))
+
+        if standard_nums:
+            street_number: Optional[str] = standard_nums[0]
+        elif prefixed_nums:
+            street_number = prefixed_nums[0]
+        else:
+            street_number = None
 
         s_clean = self.punct_re.sub(" ", s_norm)
-        tokens = [t for t in s_clean.split() if len(t) > 1]
-        return NormalizedAddress(raw=s, clean_address=" ".join(tokens), street_number=street_number, postal_code=postal_code, tokens=tokens)
+        tokens = s_clean.split()
+        return NormalizedAddress(
+            raw=s,
+            clean_address=" ".join(tokens),
+            street_number=street_number,
+            postal_code=postal_code,
+            tokens=tokens,
+        )
