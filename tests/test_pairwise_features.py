@@ -18,7 +18,7 @@ def test_feature_extraction_values():
     }
     feats = extractor.extract_pair_features(r1, r2, rank=1, blocking_score=0.92)
     assert len(feats) == len(extractor.feature_names)
-    assert len(feats) == 27
+    assert len(feats) == 32
     # Name jaro winkler should be very high
     assert feats[extractor.feature_names.index("name_jaro_winkler")] > 0.85
     # Street number match should be +1.0
@@ -46,8 +46,8 @@ def test_all_feature_values_explicit():
     feats = extractor.extract_pair_features(r1, r2, rank=2, blocking_score=0.85)
     feat_map = dict(zip(extractor.feature_names, feats))
 
-    assert len(extractor.feature_names) == 27
-    assert len(feats) == 27
+    assert len(extractor.feature_names) == 32
+    assert len(feats) == 32
     assert feat_map["name_exact_match"] == 0.0  # "Acme Widgets" != "Acme Widgets LLC"
     assert feat_map["name_clean_exact_match"] == 1.0  # LLC stripped -> "acme widgets"
     assert feat_map["name_jaro_winkler"] == 1.0
@@ -55,6 +55,8 @@ def test_all_feature_values_explicit():
     assert feat_map["name_token_sort_ratio"] == 1.0
     assert feat_map["name_token_set_ratio"] == 1.0
     assert feat_map["name_char_3gram_jaccard"] == 1.0
+    assert feat_map["name_char_3gram_dice"] == 1.0
+    assert feat_map["name_lcs_ratio"] == 1.0
     assert feat_map["name_length_diff"] == 0.0
     assert feat_map["name_length_ratio"] == 1.0
     assert feat_map["name_first_token_match"] == 1.0
@@ -65,6 +67,7 @@ def test_all_feature_values_explicit():
     assert feat_map["addr_token_jaccard"] == 1.0
     assert feat_map["addr_token_sort_ratio"] == 1.0
     assert feat_map["addr_token_set_ratio"] == 1.0
+    assert feat_map["addr_lcs_ratio"] == 1.0
     assert feat_map["addr_street_num_status"] == 1.0
     assert feat_map["addr_postal_code_status"] == 1.0
     assert feat_map["addr_locality_jaccard"] == 1.0
@@ -75,6 +78,8 @@ def test_all_feature_values_explicit():
     assert feat_map["is_source3"] == 0.0
     assert feat_map["blocking_rank"] == 2.0
     assert feat_map["blocking_score"] == pytest.approx(0.85, abs=1e-4)
+    assert feat_map["dense_cosine_similarity"] == 0.0
+    assert feat_map["dense_norm_difference"] == 0.0
 
 
 def test_name_char_3gram_jaccard():
@@ -318,4 +323,180 @@ def test_phonetic_and_locality_features():
     assert feat_map["name_common_tokens_count"] == 1.0  # "textiles"
     assert feat_map["addr_locality_jaccard"] > 0.0
     assert feat_map["addr_numeric_overlap"] > 0.5
+
+
+def test_cedex_safe_ternary_street_number_feature():
+    from src.features.pairwise_features import PairwiseFeatureExtractor
+    extractor = PairwiseFeatureExtractor()
+    # Identical street numbers
+    f_match = extractor.compute_numeric_ternary("15", "15")
+    assert f_match == 1.0
+    # Missing in one or both
+    f_miss1 = extractor.compute_numeric_ternary(None, "15")
+    assert f_miss1 == 0.0
+    f_miss2 = extractor.compute_numeric_ternary("15", None)
+    assert f_miss2 == 0.0
+    f_miss3 = extractor.compute_numeric_ternary("", "15")
+    assert f_miss3 == 0.0
+    f_miss4 = extractor.compute_numeric_ternary(float("nan"), "15")
+    assert f_miss4 == 0.0
+    f_miss5 = extractor.compute_numeric_ternary(None, None)
+    assert f_miss5 == 0.0
+    # Conflicting street numbers
+    f_conflict = extractor.compute_numeric_ternary("15", "20")
+    assert f_conflict == -1.0
+
+
+def test_pairwise_feature_vector_dimension_is_32():
+    from src.features.pairwise_features import PairwiseFeatureExtractor
+    extractor = PairwiseFeatureExtractor()
+    feat = extractor.extract_features(
+        s1_name="Tata Motors Ltd",
+        s1_addr="15 MG Road Mumbai",
+        s1_country="India",
+        cand_name="Tata Motors",
+        cand_addr="15 MG Rd Mumbai",
+        cand_country="India",
+        cand_source="S2",
+        dense_sim=0.91,
+        dense_norm_diff=0.15,
+    )
+    assert len(feat) == 32
+    assert len(extractor.feature_names) == 32
+    feat_map = dict(zip(extractor.feature_names, feat))
+    assert feat_map["dense_cosine_similarity"] == pytest.approx(0.91, abs=1e-4)
+    assert feat_map["dense_norm_difference"] == pytest.approx(0.15, abs=1e-4)
+    assert feat_map["is_source2"] == 1.0
+
+
+def test_lcs_and_char_dice_features():
+    from src.features.pairwise_features import PairwiseFeatureExtractor
+    extractor = PairwiseFeatureExtractor()
+    # Identical strings
+    r1 = {"entity_id": "S1-1", "business_name": "Acme Tools", "business_address": "123 Main Street"}
+    r2 = {"entity_id": "S2-1", "business_name": "Acme Tools", "business_address": "123 Main Street"}
+    feats_exact = extractor.extract_pair_features(r1, r2)
+    map_exact = dict(zip(extractor.feature_names, feats_exact))
+    assert map_exact["name_lcs_ratio"] == 1.0
+    assert map_exact["addr_lcs_ratio"] == 1.0
+    assert map_exact["name_char_3gram_dice"] == 1.0
+
+    # Test LCS with clean names:
+    # "Target Supercenter" -> clean: "target supercenter" (len 18)
+    # "Target" -> clean: "target" (len 6)
+    # LCS: "target" (len 6) -> 2 * 6 / (18 + 6) = 12 / 24 = 0.5
+    r3 = {"entity_id": "S1-2", "business_name": "Target Supercenter", "business_address": "100 Main St"}
+    r4 = {"entity_id": "S2-2", "business_name": "Target", "business_address": "100 Main St"}
+    feats_lcs = extractor.extract_pair_features(r3, r4)
+    map_lcs = dict(zip(extractor.feature_names, feats_lcs))
+    assert map_lcs["name_lcs_ratio"] == pytest.approx(0.5, abs=1e-4)
+
+    # Test char 3-gram Dice
+    # "Alpha Beta" -> 7 trigrams: alp, lph, pha, hab, abe, bet, eta
+    # "Alpha Gamma" -> 8 trigrams: alp, lph, pha, hag, aga, gam, amm, mma
+    # Intersection: 3 trigrams (alp, lph, pha)
+    # Dice: 2 * 3 / (7 + 8) = 6 / 15 = 0.4
+    r5 = {"entity_id": "S1-3", "business_name": "Alpha Beta", "business_address": "100 Main St"}
+    r6 = {"entity_id": "S2-3", "business_name": "Alpha Gamma", "business_address": "100 Main St"}
+    feats_dice = extractor.extract_pair_features(r5, r6)
+    map_dice = dict(zip(extractor.feature_names, feats_dice))
+    assert map_dice["name_char_3gram_dice"] == pytest.approx(0.4, abs=1e-4)
+
+    # Disjoint strings -> 0.0
+    r7 = {"entity_id": "S1-4", "business_name": "AAAA", "business_address": "111 Road"}
+    r8 = {"entity_id": "S2-4", "business_name": "ZZZZ", "business_address": "999 Street"}
+    feats_disjoint = extractor.extract_pair_features(r7, r8)
+    map_disjoint = dict(zip(extractor.feature_names, feats_disjoint))
+    assert map_disjoint["name_lcs_ratio"] == 0.0
+    assert map_disjoint["name_char_3gram_dice"] == 0.0
+
+
+def test_extract_pairs_matrix_batch_dense_features():
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [
+        {"entity_id": "S1-1", "business_name": "Acme", "business_address": "100 Main St"},
+        {"entity_id": "S1-2", "business_name": "Beta", "business_address": "200 Broad St"},
+        {"entity_id": "S1-3", "business_name": "Gamma", "business_address": "300 Pine St"},
+    ]
+    target_rows = [
+        {"entity_id": "S2-1", "business_name": "Acme Inc", "business_address": "100 Main St"},
+        {"entity_id": "S2-2", "business_name": "Beta Co", "business_address": "200 Broad St"},
+        {"entity_id": "S2-3", "business_name": "Gamma LLC", "business_address": "300 Pine St"},
+    ]
+    dense_sims = [0.85, None, float("nan")]
+    dense_norm_diffs = [0.12, float("nan"), None]
+
+    matrix = extractor.extract_pairs_matrix(
+        s1_rows, target_rows, dense_sims=dense_sims, dense_norm_diffs=dense_norm_diffs
+    )
+    assert matrix.shape == (3, 32)
+    sim_col = extractor.feature_names.index("dense_cosine_similarity")
+    norm_col = extractor.feature_names.index("dense_norm_difference")
+
+    # Row 0: 0.85, 0.12
+    assert matrix[0, sim_col] == pytest.approx(0.85, abs=1e-4)
+    assert matrix[0, norm_col] == pytest.approx(0.12, abs=1e-4)
+
+    # Row 1: None -> 0.0, NaN -> 0.0
+    assert matrix[1, sim_col] == 0.0
+    assert matrix[1, norm_col] == 0.0
+
+    # Row 2: NaN -> 0.0, None -> 0.0
+    assert matrix[2, sim_col] == 0.0
+    assert matrix[2, norm_col] == 0.0
+
+
+def test_extract_pairs_matrix_dense_length_mismatch():
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [{"entity_id": "S1-1", "business_name": "A", "business_address": "1"}]
+    target_rows = [{"entity_id": "S2-1", "business_name": "B", "business_address": "2"}]
+
+    with pytest.raises(ValueError, match="dense_sims length"):
+        extractor.extract_pairs_matrix(s1_rows, target_rows, dense_sims=[0.5, 0.6])
+
+    with pytest.raises(ValueError, match="dense_norm_diffs length"):
+        extractor.extract_pairs_matrix(s1_rows, target_rows, dense_norm_diffs=[0.1, 0.2])
+
+
+def test_static_helper_methods_edge_cases():
+    from src.features.pairwise_features import (
+        compute_char_3gram_dice,
+        compute_lcs_ratio,
+        compute_numeric_ternary,
+    )
+
+    # 1. compute_numeric_ternary
+    # Integer float matching
+    assert compute_numeric_ternary(15.0, "15") == 1.0
+    assert compute_numeric_ternary("15.0", 15) == 1.0
+    assert compute_numeric_ternary(15.0, 15.0) == 1.0
+    assert compute_numeric_ternary(15.0, 20.0) == -1.0
+    # None and NaN handling
+    assert compute_numeric_ternary(None, None) == 0.0
+    assert compute_numeric_ternary("15", None) == 0.0
+    assert compute_numeric_ternary(None, "15") == 0.0
+    assert compute_numeric_ternary(float("nan"), "15") == 0.0
+    assert compute_numeric_ternary("nan", "15") == 0.0
+    assert compute_numeric_ternary("", "") == 0.0
+
+    # 2. compute_lcs_ratio
+    assert compute_lcs_ratio(None, "abc") == 0.0
+    assert compute_lcs_ratio("abc", None) == 0.0
+    assert compute_lcs_ratio("", "") == 0.0
+    assert compute_lcs_ratio("abc", "") == 0.0
+    assert compute_lcs_ratio("abc", "abc") == 1.0
+    assert compute_lcs_ratio("abc", "ac") == pytest.approx(0.8, abs=1e-4)
+
+    # 3. compute_char_3gram_dice
+    assert compute_char_3gram_dice(None, None) == 0.0
+    assert compute_char_3gram_dice([], []) == 0.0
+    assert compute_char_3gram_dice(set(), set()) == 0.0
+    assert compute_char_3gram_dice(["abc"], None) == 0.0
+    # List inputs
+    assert compute_char_3gram_dice(["abc", "bcd"], ["abc", "bcd"]) == 1.0
+    # Partial overlap with list / set
+    assert compute_char_3gram_dice(["abc", "bcd"], {"abc", "xyz"}) == pytest.approx(0.5, abs=1e-4)
+    # Disjoint
+    assert compute_char_3gram_dice(["abc"], ["xyz"]) == 0.0
+
 
