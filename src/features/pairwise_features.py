@@ -16,6 +16,19 @@ import rapidfuzz.fuzz as fuzz
 from src.data.normalizer import NormalizedAddress, NormalizedName, TextNormalizer, compute_soundex
 
 
+def _sanitize_float(val: Any, default: float = 0.0) -> float:
+    """Safely coerce any scalar value to float, handling None, NaN, and invalid values."""
+    if val is None:
+        return default
+    if isinstance(val, float) and math.isnan(val):
+        return default
+    try:
+        f = float(val)
+        return default if math.isnan(f) else f
+    except (ValueError, TypeError):
+        return default
+
+
 class PairwiseFeatureExtractor:
     FEATURE_NAMES = [
         "name_exact_match",
@@ -67,44 +80,65 @@ class PairwiseFeatureExtractor:
         """
         if s1_num is None or cand_num is None:
             return 0.0
-        if isinstance(s1_num, float) and math.isnan(s1_num):
-            return 0.0
-        if isinstance(cand_num, float) and math.isnan(cand_num):
-            return 0.0
+        if isinstance(s1_num, float):
+            if math.isnan(s1_num):
+                return 0.0
+            if s1_num.is_integer():
+                s1_num = int(s1_num)
+        if isinstance(cand_num, float):
+            if math.isnan(cand_num):
+                return 0.0
+            if cand_num.is_integer():
+                cand_num = int(cand_num)
+
         s1_str = str(s1_num).strip().lower()
         cand_str = str(cand_num).strip().lower()
         if not s1_str or not cand_str:
             return 0.0
         if s1_str in {"nan", "none", "null", "<na>", "n/a"} or cand_str in {"nan", "none", "null", "<na>", "n/a"}:
             return 0.0
+
+        # Normalize trailing integer decimals like '15.0' -> '15'
+        if s1_str.endswith(".0") and s1_str[:-2].isdigit():
+            s1_str = s1_str[:-2]
+        if cand_str.endswith(".0") and cand_str[:-2].isdigit():
+            cand_str = cand_str[:-2]
+
         return 1.0 if s1_str == cand_str else -1.0
 
     @staticmethod
-    def compute_lcs_ratio(s1: str, s2: str) -> float:
+    def compute_lcs_ratio(s1: Optional[str], s2: Optional[str]) -> float:
         """Compute Longest Common Subsequence (LCS) ratio between two strings.
 
         Formula: 2 * len(LCS) / (len(s1) + len(s2))
         """
         if not s1 or not s2:
             return 0.0
-        total_len = len(s1) + len(s2)
+        str1 = str(s1)
+        str2 = str(s2)
+        total_len = len(str1) + len(str2)
         if total_len == 0:
             return 0.0
-        lcs_len = LCSseq.similarity(s1, s2)
+        lcs_len = LCSseq.similarity(str1, str2)
         return float(2.0 * lcs_len / total_len)
 
     @staticmethod
-    def compute_char_3gram_dice(grams1: set, grams2: set) -> float:
-        """Compute Sørensen-Dice similarity on character 3-gram sets.
+    def compute_char_3gram_dice(grams1: Any, grams2: Any) -> float:
+        """Compute Sørensen-Dice similarity on character 3-gram sets or sequences.
 
         Formula: 2 * len(set1 ∩ set2) / (len(set1) + len(set2))
         """
         if not grams1 or not grams2:
             return 0.0
-        total_len = len(grams1) + len(grams2)
+        set1 = set(grams1) if not isinstance(grams1, set) else grams1
+        set2 = set(grams2) if not isinstance(grams2, set) else grams2
+        if not set1 or not set2:
+            return 0.0
+        inter_len = len(set1 & set2)
+        total_len = len(set1) + len(set2)
         if total_len == 0:
             return 0.0
-        return float(2.0 * len(grams1 & grams2) / total_len)
+        return float(2.0 * inter_len / total_len)
 
     def _get_normalized_name(self, row: Dict) -> NormalizedName:
         if "_norm_name" in row and isinstance(row["_norm_name"], NormalizedName):
@@ -140,14 +174,15 @@ class PairwiseFeatureExtractor:
         tok_sort = float(fuzz.token_sort_ratio(cln1, cln2)) / 100.0 if cln1 and cln2 else 0.0
         tok_set = float(fuzz.token_set_ratio(cln1, cln2)) / 100.0 if cln1 and cln2 else 0.0
 
-        # Char 3-gram Jaccard and Sørensen-Dice
+        # Char 3-gram Jaccard and Sørensen-Dice (single set intersection)
         grams1 = set(s1_n.char_3grams)
         grams2 = set(t_n.char_3grams)
         if grams1 and grams2:
-            gram_union = len(grams1 | grams2)
-            char_3gram_jaccard = float(len(grams1 & grams2) / gram_union) if gram_union > 0 else 0.0
+            inter_len = len(grams1 & grams2)
             gram_sum = len(grams1) + len(grams2)
-            name_char_3gram_dice = float(2.0 * len(grams1 & grams2) / gram_sum) if gram_sum > 0 else 0.0
+            gram_union = gram_sum - inter_len
+            char_3gram_jaccard = float(inter_len / gram_union) if gram_union > 0 else 0.0
+            name_char_3gram_dice = float(2.0 * inter_len / gram_sum) if gram_sum > 0 else 0.0
         else:
             char_3gram_jaccard = 0.0
             name_char_3gram_dice = 0.0
@@ -292,18 +327,18 @@ class PairwiseFeatureExtractor:
 
         if dense_sim is None:
             raw_sim = target_row.get("dense_sim", target_row.get("dense_cosine_similarity", 0.0))
-            dense_sim = float(raw_sim) if raw_sim is not None else 0.0
+            dense_sim_val = _sanitize_float(raw_sim, 0.0)
         else:
-            dense_sim = float(dense_sim)
+            dense_sim_val = _sanitize_float(dense_sim, 0.0)
 
         if dense_norm_diff is None:
             raw_diff = target_row.get("dense_norm_diff", target_row.get("dense_norm_difference", 0.0))
-            dense_norm_diff = float(raw_diff) if raw_diff is not None else 0.0
+            dense_norm_val = _sanitize_float(raw_diff, 0.0)
         else:
-            dense_norm_diff = float(dense_norm_diff)
+            dense_norm_val = _sanitize_float(dense_norm_diff, 0.0)
 
         return self._compute_features(
-            s1_n, s1_a, t_n, t_a, target_id, target_src, rank, blocking_score, dense_sim, dense_norm_diff
+            s1_n, s1_a, t_n, t_a, target_id, target_src, rank, blocking_score, dense_sim_val, dense_norm_val
         )
 
     def extract_features(
@@ -323,6 +358,8 @@ class PairwiseFeatureExtractor:
         **kwargs: Any,
     ) -> np.ndarray:
         """Extract 32-dimensional feature vector for a candidate pair from raw strings/metadata."""
+        d_sim = _sanitize_float(dense_sim, 0.0)
+        d_norm = _sanitize_float(dense_norm_diff, 0.0)
         s1_row = {
             "business_name": s1_name,
             "business_address": s1_addr,
@@ -334,16 +371,16 @@ class PairwiseFeatureExtractor:
             "business_address": cand_addr,
             "country": cand_country,
             "source": cand_source,
-            "dense_sim": dense_sim,
-            "dense_norm_diff": dense_norm_diff,
+            "dense_sim": d_sim,
+            "dense_norm_diff": d_norm,
         }
         return self.extract_pair_features(
             s1_row,
             cand_row,
             rank=rank,
             blocking_score=blocking_score,
-            dense_sim=dense_sim,
-            dense_norm_diff=dense_norm_diff,
+            dense_sim=d_sim,
+            dense_norm_diff=d_norm,
         )
 
     def extract_pairs_matrix(
@@ -352,8 +389,8 @@ class PairwiseFeatureExtractor:
         target_rows: List[Dict],
         ranks: Optional[List[int]] = None,
         scores: Optional[List[float]] = None,
-        dense_sims: Optional[List[float]] = None,
-        dense_norm_diffs: Optional[List[float]] = None,
+        dense_sims: Optional[List[Optional[float]]] = None,
+        dense_norm_diffs: Optional[List[Optional[float]]] = None,
     ) -> np.ndarray:
         n = len(s1_rows)
         if len(target_rows) != n:
@@ -416,16 +453,16 @@ class PairwiseFeatureExtractor:
             target_src = str(t.get("source") or "")
 
             if dense_sims is not None:
-                d_sim = float(dense_sims[i])
+                d_sim = _sanitize_float(dense_sims[i], 0.0)
             else:
                 raw_sim = t.get("dense_sim", t.get("dense_cosine_similarity", 0.0))
-                d_sim = float(raw_sim) if raw_sim is not None else 0.0
+                d_sim = _sanitize_float(raw_sim, 0.0)
 
             if dense_norm_diffs is not None:
-                d_norm = float(dense_norm_diffs[i])
+                d_norm = _sanitize_float(dense_norm_diffs[i], 0.0)
             else:
                 raw_diff = t.get("dense_norm_diff", t.get("dense_norm_difference", 0.0))
-                d_norm = float(raw_diff) if raw_diff is not None else 0.0
+                d_norm = _sanitize_float(raw_diff, 0.0)
 
             matrix[i] = self._compute_features(
                 s1_n, s1_a, t_n, t_a, target_id, target_src, r, s, d_sim, d_norm
@@ -434,5 +471,7 @@ class PairwiseFeatureExtractor:
         return matrix
 
 
-# Module-level alias for convenience and direct imports
+# Module-level aliases for convenience and direct imports
 compute_numeric_ternary = PairwiseFeatureExtractor.compute_numeric_ternary
+compute_lcs_ratio = PairwiseFeatureExtractor.compute_lcs_ratio
+compute_char_3gram_dice = PairwiseFeatureExtractor.compute_char_3gram_dice

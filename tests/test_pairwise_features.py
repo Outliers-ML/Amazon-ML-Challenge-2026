@@ -411,3 +411,92 @@ def test_lcs_and_char_dice_features():
     assert map_disjoint["name_char_3gram_dice"] == 0.0
 
 
+def test_extract_pairs_matrix_batch_dense_features():
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [
+        {"entity_id": "S1-1", "business_name": "Acme", "business_address": "100 Main St"},
+        {"entity_id": "S1-2", "business_name": "Beta", "business_address": "200 Broad St"},
+        {"entity_id": "S1-3", "business_name": "Gamma", "business_address": "300 Pine St"},
+    ]
+    target_rows = [
+        {"entity_id": "S2-1", "business_name": "Acme Inc", "business_address": "100 Main St"},
+        {"entity_id": "S2-2", "business_name": "Beta Co", "business_address": "200 Broad St"},
+        {"entity_id": "S2-3", "business_name": "Gamma LLC", "business_address": "300 Pine St"},
+    ]
+    dense_sims = [0.85, None, float("nan")]
+    dense_norm_diffs = [0.12, float("nan"), None]
+
+    matrix = extractor.extract_pairs_matrix(
+        s1_rows, target_rows, dense_sims=dense_sims, dense_norm_diffs=dense_norm_diffs
+    )
+    assert matrix.shape == (3, 32)
+    sim_col = extractor.feature_names.index("dense_cosine_similarity")
+    norm_col = extractor.feature_names.index("dense_norm_difference")
+
+    # Row 0: 0.85, 0.12
+    assert matrix[0, sim_col] == pytest.approx(0.85, abs=1e-4)
+    assert matrix[0, norm_col] == pytest.approx(0.12, abs=1e-4)
+
+    # Row 1: None -> 0.0, NaN -> 0.0
+    assert matrix[1, sim_col] == 0.0
+    assert matrix[1, norm_col] == 0.0
+
+    # Row 2: NaN -> 0.0, None -> 0.0
+    assert matrix[2, sim_col] == 0.0
+    assert matrix[2, norm_col] == 0.0
+
+
+def test_extract_pairs_matrix_dense_length_mismatch():
+    extractor = PairwiseFeatureExtractor()
+    s1_rows = [{"entity_id": "S1-1", "business_name": "A", "business_address": "1"}]
+    target_rows = [{"entity_id": "S2-1", "business_name": "B", "business_address": "2"}]
+
+    with pytest.raises(ValueError, match="dense_sims length"):
+        extractor.extract_pairs_matrix(s1_rows, target_rows, dense_sims=[0.5, 0.6])
+
+    with pytest.raises(ValueError, match="dense_norm_diffs length"):
+        extractor.extract_pairs_matrix(s1_rows, target_rows, dense_norm_diffs=[0.1, 0.2])
+
+
+def test_static_helper_methods_edge_cases():
+    from src.features.pairwise_features import (
+        compute_char_3gram_dice,
+        compute_lcs_ratio,
+        compute_numeric_ternary,
+    )
+
+    # 1. compute_numeric_ternary
+    # Integer float matching
+    assert compute_numeric_ternary(15.0, "15") == 1.0
+    assert compute_numeric_ternary("15.0", 15) == 1.0
+    assert compute_numeric_ternary(15.0, 15.0) == 1.0
+    assert compute_numeric_ternary(15.0, 20.0) == -1.0
+    # None and NaN handling
+    assert compute_numeric_ternary(None, None) == 0.0
+    assert compute_numeric_ternary("15", None) == 0.0
+    assert compute_numeric_ternary(None, "15") == 0.0
+    assert compute_numeric_ternary(float("nan"), "15") == 0.0
+    assert compute_numeric_ternary("nan", "15") == 0.0
+    assert compute_numeric_ternary("", "") == 0.0
+
+    # 2. compute_lcs_ratio
+    assert compute_lcs_ratio(None, "abc") == 0.0
+    assert compute_lcs_ratio("abc", None) == 0.0
+    assert compute_lcs_ratio("", "") == 0.0
+    assert compute_lcs_ratio("abc", "") == 0.0
+    assert compute_lcs_ratio("abc", "abc") == 1.0
+    assert compute_lcs_ratio("abc", "ac") == pytest.approx(0.8, abs=1e-4)
+
+    # 3. compute_char_3gram_dice
+    assert compute_char_3gram_dice(None, None) == 0.0
+    assert compute_char_3gram_dice([], []) == 0.0
+    assert compute_char_3gram_dice(set(), set()) == 0.0
+    assert compute_char_3gram_dice(["abc"], None) == 0.0
+    # List inputs
+    assert compute_char_3gram_dice(["abc", "bcd"], ["abc", "bcd"]) == 1.0
+    # Partial overlap with list / set
+    assert compute_char_3gram_dice(["abc", "bcd"], {"abc", "xyz"}) == pytest.approx(0.5, abs=1e-4)
+    # Disjoint
+    assert compute_char_3gram_dice(["abc"], ["xyz"]) == 0.0
+
+
