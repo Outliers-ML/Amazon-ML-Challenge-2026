@@ -138,6 +138,10 @@ def test_double_metaphone_computation():
     p_renault, _ = compute_double_metaphone("Renault")
     assert len(p_renault) > 0
 
+    # English words with terminal X and D
+    assert compute_double_metaphone("Fedex") == ("FTKS", "FTKS")
+    assert compute_double_metaphone("Good") == ("KT", "KT")
+
 
 def test_french_cedex_stripping_from_numerals():
     from src.data.normalizer import TextNormalizer
@@ -149,6 +153,18 @@ def test_french_cedex_stripping_from_numerals():
     assert "cedex" not in res.clean_address
     assert "bp" not in res.clean_address
     assert res.cedex_flag is True
+
+    # Punctuation in B.P. and preservation of postal code directly after
+    res_bp = norm.normalize_address("RUE DE RIVOLI B.P. 1024 PARIS 75001")
+    assert res_bp.street_number is None
+    assert res_bp.postal_code == "75001"
+    assert res_bp.cedex_flag is True
+
+    # Postal code directly following CEDEX must not be stripped
+    res_cedex = norm.normalize_address("10 RUE DE LA PAIX CEDEX 75001")
+    assert res_cedex.street_number == "10"
+    assert res_cedex.postal_code == "75001"
+    assert res_cedex.cedex_flag is True
 
 
 def test_dual_track_name_representations():

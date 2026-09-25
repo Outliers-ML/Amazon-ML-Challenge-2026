@@ -167,7 +167,7 @@ def compute_double_metaphone(word: str) -> Tuple[str, str]:
                 primary.append("T")
                 secondary.append("T")
                 pos += 2
-            elif pos == length - 1 and pos > 0 and s[pos-1] in "AEIOUY" and s.endswith(("ARD", "ERD", "OOD", "IED")):
+            elif pos == length - 1 and pos > 0 and s[pos-1] in "AEIOUY" and s.endswith(("ARD", "ERD", "IED")):
                 pos += 1
             else:
                 primary.append("T")
@@ -297,7 +297,7 @@ def compute_double_metaphone(word: str) -> Tuple[str, str]:
                 primary.append("T")
                 secondary.append("T")
                 pos += 2
-            elif pos == length - 1 and s.endswith(("LT", "AULT", "EAU")):
+            elif pos == length - 1 and s.endswith(("AULT", "OT", "ET")):
                 secondary.append("T")
                 pos += 1
             else:
@@ -318,7 +318,7 @@ def compute_double_metaphone(word: str) -> Tuple[str, str]:
             else:
                 pos += 1
         elif ch == "X":
-            if pos == length - 1 and pos > 0 and s[pos-1] in "AEIOUY":
+            if pos == length - 1 and s.endswith(("AUX", "EAUX", "OUX")):
                 secondary.append("KS")
                 pos += 1
             else:
@@ -381,8 +381,8 @@ class TextNormalizer:
         self.street_num_re = re.compile(r"\b(\d+[a-zA-Z]?)\b")
         self.postal_re = re.compile(r"\b(\d{5,6})\b")
         self.punct_re = re.compile(r"[^\w\s]")
-        self.cedex_detect_re = re.compile(r"\b(cedex|bp|cs)\b", re.IGNORECASE)
-        self.cedex_strip_re = re.compile(r"\b(cedex|bp|cs)\s*\d*\b", re.IGNORECASE)
+        self.cedex_detect_re = re.compile(r"\b(cedex|b\.?p\.?|c\.?s\.?)(?!\w)", re.IGNORECASE)
+        self.cedex_strip_re = re.compile(r"\b(cedex|b\.?p\.?|c\.?s\.?)\s*(?:\d{1,4}\b)?", re.IGNORECASE)
 
     def normalize_name(self, name: Optional[str]) -> NormalizedName:
         if _is_null(name):
