@@ -406,49 +406,57 @@ def main():
         target_part_dict = {row["entity_id"]: row for row in s2_part.to_dict(orient="records")}
         target_part_dict.update({row["entity_id"]: row for row in s3_part.to_dict(orient="records")})
 
-        test_pair_s1 = []
-        test_pair_target = []
-        test_pair_s1_ids = []
-        test_pair_cand_ids = []
-        test_pair_ranks = []
-        test_pair_scores = []
+        # Match decisions with streaming batch processing (bounded memory & real-time progress)
+        part_matches: Dict[str, List[str]] = {s1_id: [] for s1_id in s1_part["entity_id"]}
 
+        batch_s1: List[Dict] = []
+        batch_target: List[Dict] = []
+        batch_s1_ids: List[str] = []
+        batch_cand_ids: List[str] = []
+        batch_ranks: List[int] = []
+        batch_scores: List[float] = []
+
+        total_pairs_processed = 0
+
+        def process_batch():
+            nonlocal total_pairs_processed
+            if not batch_s1 or model is None:
+                return
+            X_chunk = extractor.extract_pairs_matrix(
+                batch_s1, batch_target, ranks=batch_ranks, scores=batch_scores
+            )
+            chunk_probs = model.predict_proba(X_chunk)[:, 1]
+            for s_id, c_id, p in zip(batch_s1_ids, batch_cand_ids, chunk_probs):
+                if p >= best_tau:
+                    part_matches[s_id].append(c_id)
+            total_pairs_processed += len(batch_s1)
+            if total_pairs_processed % 200000 == 0 or (total_pairs_processed < 200000 and total_pairs_processed % 50000 == 0):
+                print(f"    ... processed {total_pairs_processed:,} pairs in '{country}' partition", flush=True)
+            batch_s1.clear()
+            batch_target.clear()
+            batch_s1_ids.clear()
+            batch_cand_ids.clear()
+            batch_ranks.clear()
+            batch_scores.clear()
+
+        chunk_size = args.infer_chunk_size
         for s1_id in s1_part["entity_id"]:
             s1_row = s1_part_dict[s1_id]
             cand_list = part_cands.get(s1_id, [])
             for r_idx, c_id in enumerate(cand_list, start=1):
                 t_row = target_part_dict.get(c_id, {"entity_id": c_id, "business_name": "", "business_address": ""})
-                test_pair_s1.append(s1_row)
-                test_pair_target.append(t_row)
-                test_pair_s1_ids.append(s1_id)
-                test_pair_cand_ids.append(c_id)
-                test_pair_ranks.append(r_idx)
-                test_pair_scores.append(1.0 / r_idx)
+                batch_s1.append(s1_row)
+                batch_target.append(t_row)
+                batch_s1_ids.append(s1_id)
+                batch_cand_ids.append(c_id)
+                batch_ranks.append(r_idx)
+                batch_scores.append(1.0 / r_idx)
+                if len(batch_s1) >= chunk_size:
+                    process_batch()
 
-        # Match decisions
-        part_matches: Dict[str, List[str]] = {s1_id: [] for s1_id in s1_part["entity_id"]}
-
-        n_pairs = len(test_pair_s1)
-        if n_pairs > 0 and model is not None:
-            chunk_size = args.infer_chunk_size
-            for start_idx in range(0, n_pairs, chunk_size):
-                end_idx = min(start_idx + chunk_size, n_pairs)
-                chunk_s1 = test_pair_s1[start_idx:end_idx]
-                chunk_target = test_pair_target[start_idx:end_idx]
-                chunk_ranks = test_pair_ranks[start_idx:end_idx]
-                chunk_scores = test_pair_scores[start_idx:end_idx]
-
-                X_chunk = extractor.extract_pairs_matrix(
-                    chunk_s1, chunk_target, ranks=chunk_ranks, scores=chunk_scores
-                )
-                chunk_probs = model.predict_proba(X_chunk)[:, 1]
-
-                for i in range(start_idx, end_idx):
-                    p = chunk_probs[i - start_idx]
-                    if p >= best_tau:
-                        s1_id = test_pair_s1_ids[i]
-                        c_id = test_pair_cand_ids[i]
-                        part_matches[s1_id].append(c_id)
+        # Final remaining batch
+        if batch_s1:
+            process_batch()
 
         # Stream write matching results
         write_matching_results(
