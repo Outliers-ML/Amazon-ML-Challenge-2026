@@ -169,16 +169,16 @@ def package_submission_zip(
         if src_dir and src_dir.is_dir():
             for f in sorted(src_dir.rglob("*")):
                 if f.is_file():
+                    rel_p = f.relative_to(src_dir)
                     # Exclude pycache, egg-info, pytest, hidden files
                     if any(
                         part.startswith(".")
                         or part == "__pycache__"
                         or part.endswith(".egg-info")
                         or part.endswith(".pyc")
-                        for part in f.parts
+                        for part in rel_p.parts
                     ):
                         continue
-                    rel_p = f.relative_to(src_dir)
                     arcname = f"code/business_entity_resolution/src/{rel_p.as_posix()}"
                     zf.write(f, arcname=arcname)
 

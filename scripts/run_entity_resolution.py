@@ -31,31 +31,22 @@ else:
 import numpy as np
 import pandas as pd
 
+try:
+    from src.data.multi_tier_blocking import MultiTierBlocker
+except ImportError:
+    from src.data.blocking import MultiKeyBlocker as MultiTierBlocker
 from src.data.blocking import MultiKeyBlocker
 from src.features.pairwise_features import PairwiseFeatureExtractor
-from src.pipeline.er_trainer import EREnsembleTrainer, ERModelTrainer, optimize_f05_threshold
+from src.models.cross_encoder import CrossEncoderReranker, format_pair_text
+from src.pipeline.er_trainer import (
+    EREnsembleTrainer,
+    ERModelTrainer,
+    compute_meta_probability,
+    filter_candidates_for_cross_encoder,
+    optimize_f05_threshold,
+)
+from src.pipeline.post_processing import disambiguate_and_guard, write_matching_results
 from src.utils.experiment_tracker import ExperimentTracker
-
-
-def write_matching_results(
-    matching_map: Dict[str, List[str]],
-    output_path: Path | str,
-    append: bool = False,
-    write_header: bool = True,
-) -> None:
-    """Write matching results TSV matching competition schema.
-
-    Supports streaming append mode across partition chunks.
-    """
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    mode = "a" if append else "w"
-    with open(out, mode, encoding="utf-8") as f:
-        if write_header:
-            f.write("source1_entity_id\tmatched_entity_ids\n")
-        for s1_id in sorted(matching_map.keys()):
-            matched_str = ",".join(matching_map[s1_id])
-            f.write(f"{s1_id}\t{matched_str}\n")
 
 
 def load_ground_truth(gt_path: Path) -> Dict[str, Set[str]]:
@@ -183,6 +174,45 @@ def main():
         action="store_true",
         help="Disable logging experiment to tracker/dashboard ledger",
     )
+    parser.add_argument(
+        "--use-cross-encoder",
+        action="store_true",
+        help="Enable Stage 2 Cross-Encoder reranking",
+    )
+    parser.add_argument(
+        "--cross-encoder-model",
+        default="BAAI/bge-reranker-v2-m3",
+        help="Cross-Encoder model identifier/path (default: BAAI/bge-reranker-v2-m3)",
+    )
+    parser.add_argument(
+        "--ce-cutoff",
+        type=float,
+        default=0.12,
+        help="GBDT probability threshold for feeding into Cross-Encoder (default: 0.12)",
+    )
+    parser.add_argument(
+        "--ce-max-keep",
+        type=int,
+        default=8,
+        help="Maximum candidates per S1 entity sent to Cross-Encoder (default: 8)",
+    )
+    parser.add_argument(
+        "--use-gpu-gbdt",
+        action="store_true",
+        help="Use GPU tree methods in XGBoost (hist/cuda) and CatBoost (GPU)",
+    )
+    parser.add_argument(
+        "--tau-singleton",
+        type=float,
+        default=0.74,
+        help="Singleton guard threshold for disambiguate_and_guard (default: 0.74)",
+    )
+    parser.add_argument(
+        "--tau-secondary",
+        type=float,
+        default=0.60,
+        help="Secondary candidate admission threshold for disambiguate_and_guard (default: 0.60)",
+    )
 
     args = parser.parse_args()
 
@@ -208,6 +238,11 @@ def main():
                 "seed": args.seed,
                 "infer_chunk_size": args.infer_chunk_size,
                 "ensemble": args.ensemble,
+                "use_cross_encoder": args.use_cross_encoder,
+                "cross_encoder_model": args.cross_encoder_model if args.use_cross_encoder else None,
+                "ce_cutoff": args.ce_cutoff,
+                "ce_max_keep": args.ce_max_keep,
+                "use_gpu_gbdt": args.use_gpu_gbdt,
             },
         )
 
@@ -226,7 +261,7 @@ def main():
         if candidate_file.exists():
             candidate_file.unlink()
 
-    blocker = MultiKeyBlocker(max_candidates=args.max_candidates, max_postings=args.max_postings)
+    blocker = MultiTierBlocker(max_candidates=args.max_candidates, max_postings=args.max_postings)
     extractor = PairwiseFeatureExtractor()
 
     # =========================================================================
@@ -353,11 +388,11 @@ def main():
             n_groups = len(set(s1_groups))
             n_splits = min(args.n_splits, max(2, n_groups))
             if args.ensemble:
-                print(f"Training Multi-Model Ensemble (LightGBM + CatBoost + XGBoost) across {n_splits} folds...")
-                trainer = EREnsembleTrainer(n_splits=n_splits, seed=args.seed)
+                print(f"Training Multi-Model Ensemble (LightGBM + CatBoost + XGBoost) across {n_splits} folds (GPU: {args.use_gpu_gbdt})...")
+                trainer = EREnsembleTrainer(n_splits=n_splits, seed=args.seed, use_gpu=args.use_gpu_gbdt)
             else:
-                print(f"Training LightGBM model across {n_splits} folds...")
-                trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed)
+                print(f"Training LightGBM model across {n_splits} folds (GPU: {args.use_gpu_gbdt})...")
+                trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed, use_gpu=args.use_gpu_gbdt)
             model = trainer.train(X_train, y_train, s1_groups)
 
             probs_val, val_idx = trainer.predict_val_proba(X_train)
@@ -440,6 +475,14 @@ def main():
         unique_test_countries = [c for c in unique_test_countries if c in selected_c]
     print(f"Dynamic test partitions to process ({len(unique_test_countries)}): {list(unique_test_countries)}")
 
+    reranker = None
+    if args.use_cross_encoder:
+        print(f"[+] Initializing Cross-Encoder reranker: {args.cross_encoder_model}")
+        reranker = CrossEncoderReranker(model_name=args.cross_encoder_model)
+
+    tau_singleton = args.tau if args.tau is not None else args.tau_singleton
+    tau_secondary = args.tau_secondary
+
     partition_summaries: Dict[str, Dict[str, int]] = {}
 
     for p_idx, country in enumerate(unique_test_countries):
@@ -459,20 +502,20 @@ def main():
 
         # Stream write candidate pairs
         cand_has_content = candidate_file.exists() and candidate_file.stat().st_size > 0
-        MultiKeyBlocker.write_candidate_pairs(
+        write_cands_fn = getattr(MultiTierBlocker, "write_candidate_pairs", MultiKeyBlocker.write_candidate_pairs)
+        write_cands_fn(
             part_cands,
             candidate_file,
             append=cand_has_content,
             write_header=(not cand_has_content),
         )
 
-        # 2. Pairwise Feature Extraction & Inference
+        # 2. Pairwise Feature Extraction & Fast GBDT Scoring
         s1_part_dict = {row["entity_id"]: row for row in s1_part.to_dict(orient="records")}
         target_part_dict = {row["entity_id"]: row for row in s2_part.to_dict(orient="records")}
         target_part_dict.update({row["entity_id"]: row for row in s3_part.to_dict(orient="records")})
 
-        # Match decisions with streaming batch processing (bounded memory & real-time progress)
-        part_matches: Dict[str, List[str]] = {s1_id: [] for s1_id in s1_part["entity_id"]}
+        entity_candidate_records: Dict[str, List[Dict[str, Any]]] = {s1_id: [] for s1_id in s1_part["entity_id"]}
 
         batch_s1: List[Dict] = []
         batch_target: List[Dict] = []
@@ -491,9 +534,27 @@ def main():
                 batch_s1, batch_target, ranks=batch_ranks, scores=batch_scores
             )
             chunk_probs = model.predict_proba(X_chunk)[:, 1]
-            for s_id, c_id, p in zip(batch_s1_ids, batch_cand_ids, chunk_probs):
-                if p >= best_tau:
-                    part_matches[s_id].append(c_id)
+
+            if isinstance(model, EREnsembleTrainer):
+                comp_probs = model.predict_components(X_chunk)
+                p_xgb_arr = comp_probs.get("xgboost", chunk_probs)
+                p_cat_arr = comp_probs.get("catboost", chunk_probs)
+            else:
+                p_xgb_arr = chunk_probs
+                p_cat_arr = chunk_probs
+
+            min_buffer_threshold = min(args.ce_cutoff, tau_secondary) if args.use_cross_encoder else tau_secondary
+            for s_id, c_id, p_gbdt, p_xgb, p_cat in zip(
+                batch_s1_ids, batch_cand_ids, chunk_probs, p_xgb_arr, p_cat_arr
+            ):
+                if p_gbdt >= min_buffer_threshold:
+                    entity_candidate_records[s_id].append({
+                        "cand_id": c_id,
+                        "p_gbdt": float(p_gbdt),
+                        "p_xgb": float(p_xgb),
+                        "p_cat": float(p_cat),
+                    })
+
             total_pairs_processed += len(batch_s1)
             if total_pairs_processed % 200000 == 0 or (total_pairs_processed < 200000 and total_pairs_processed % 50000 == 0):
                 print(f"    ... processed {total_pairs_processed:,} pairs in '{country}' partition", flush=True)
@@ -522,6 +583,95 @@ def main():
         # Final remaining batch
         if batch_s1:
             process_batch()
+
+        # 3. Cascaded Scoring Pipeline
+        scored_pairs: List[Dict[str, Any]] = []
+
+        if args.use_cross_encoder and reranker is not None:
+            ce_pairs_to_score: List[Tuple[str, str, Dict[str, Any]]] = []
+            ce_text_pairs: List[Tuple[str, str]] = []
+
+            for s1_id, cands in entity_candidate_records.items():
+                if not cands:
+                    continue
+                filtered_cands = filter_candidates_for_cross_encoder(
+                    cands, cutoff=args.ce_cutoff, max_keep=args.ce_max_keep, prob_key="p_gbdt"
+                )
+                filtered_cand_ids = set(c["cand_id"] for c in filtered_cands)
+
+                s1_row = s1_part_dict[s1_id]
+                for cand_info in filtered_cands:
+                    c_id = cand_info["cand_id"]
+                    t_row = target_part_dict.get(c_id, {"business_name": "", "business_address": ""})
+                    txt_pair = format_pair_text(
+                        s1_name=s1_row.get("business_name", ""),
+                        s1_addr=s1_row.get("business_address", ""),
+                        s1_country=country,
+                        cand_name=t_row.get("business_name", ""),
+                        cand_addr=t_row.get("business_address", ""),
+                        cand_country=country,
+                    )
+                    ce_pairs_to_score.append((s1_id, c_id, cand_info))
+                    ce_text_pairs.append(txt_pair)
+
+                # For candidates not sent to Cross-Encoder, compute fallback meta probability
+                for cand_info in cands:
+                    if cand_info["cand_id"] not in filtered_cand_ids:
+                        p_final = compute_meta_probability(
+                            p_ce=None,
+                            p_xgb=cand_info["p_xgb"],
+                            p_cat=cand_info["p_cat"],
+                        )
+                        if p_final >= tau_secondary:
+                            scored_pairs.append({
+                                "source1_id": s1_id,
+                                "candidate_id": cand_info["cand_id"],
+                                "p_final": p_final,
+                                "country": country,
+                            })
+
+            if ce_text_pairs:
+                print(f"    ... running Cross-Encoder reranking on {len(ce_text_pairs):,} candidate pairs", flush=True)
+                p_ce_scores = reranker.predict_proba(ce_text_pairs, batch_size=256)
+                for (s1_id, c_id, cand_info), p_ce in zip(ce_pairs_to_score, p_ce_scores):
+                    p_final = compute_meta_probability(
+                        p_ce=float(p_ce),
+                        p_xgb=cand_info["p_xgb"],
+                        p_cat=cand_info["p_cat"],
+                        w_ce=0.50,
+                        w_xgb=0.25,
+                        w_cat=0.25,
+                    )
+                    scored_pairs.append({
+                        "source1_id": s1_id,
+                        "candidate_id": c_id,
+                        "p_final": p_final,
+                        "country": country,
+                    })
+        else:
+            for s1_id, cands in entity_candidate_records.items():
+                for cand_info in cands:
+                    p_final = compute_meta_probability(
+                        p_ce=None,
+                        p_xgb=cand_info["p_xgb"],
+                        p_cat=cand_info["p_cat"],
+                    )
+                    if p_final >= tau_secondary:
+                        scored_pairs.append({
+                            "source1_id": s1_id,
+                            "candidate_id": cand_info["cand_id"],
+                            "p_final": p_final,
+                            "country": country,
+                        })
+
+        # 4. Disambiguation and Singleton Guard
+        all_s1_ids = list(s1_part["entity_id"])
+        part_matches = disambiguate_and_guard(
+            scored_pairs=scored_pairs,
+            all_s1_ids=all_s1_ids,
+            tau_singleton=tau_singleton,
+            tau_secondary=tau_secondary,
+        )
 
         # Stream write matching results
         match_has_content = matching_file.exists() and matching_file.stat().st_size > 0
