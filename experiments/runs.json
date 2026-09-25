@@ -205,5 +205,121 @@
       }
     },
     "duration_seconds": 0.36
+  },
+  {
+    "run_id": "run-20260925-041458-008f2d",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-25T04:14:58.375701+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 10,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 2,
+      "seed": 42,
+      "infer_chunk_size": 50000
+    },
+    "metrics": {
+      "macro_f05": 1.0,
+      "best_tau": 0.5,
+      "train_pairs": 7,
+      "train_positives": 5,
+      "total_test_s1": 3,
+      "total_test_matched": 3,
+      "total_test_singletons": 0
+    },
+    "feature_importances": {
+      "name_exact_match": 0.0,
+      "name_clean_exact_match": 0.0,
+      "name_jaro_winkler": 0.0,
+      "name_levenshtein_ratio": 0.0,
+      "name_token_sort_ratio": 0.0,
+      "name_token_set_ratio": 0.0,
+      "name_char_3gram_jaccard": 0.0,
+      "name_length_diff": 0.0,
+      "name_length_ratio": 0.0,
+      "name_first_token_match": 0.0,
+      "addr_exact_match": 0.0,
+      "addr_token_jaccard": 0.0,
+      "addr_token_sort_ratio": 0.0,
+      "addr_token_set_ratio": 0.0,
+      "addr_street_num_status": 0.0,
+      "addr_postal_code_status": 0.0,
+      "addr_is_empty": 0.0,
+      "name_in_address_cross": 0.0,
+      "is_source2": 0.0,
+      "is_source3": 0.0,
+      "blocking_rank": 0.0,
+      "blocking_score": 0.0
+    },
+    "threshold_curve": {
+      "thresholds": [
+        0.5,
+        0.51875,
+        0.5375,
+        0.55625,
+        0.575,
+        0.59375,
+        0.6125,
+        0.63125,
+        0.65,
+        0.66875,
+        0.6875,
+        0.70625,
+        0.725,
+        0.74375,
+        0.7625,
+        0.78125,
+        0.8,
+        0.81875,
+        0.8374999999999999,
+        0.85625,
+        0.875,
+        0.89375,
+        0.9125,
+        0.9312499999999999,
+        0.95
+      ],
+      "scores": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "partition_summary": {
+      "US": {
+        "total": 2,
+        "matched": 2,
+        "singletons": 0
+      },
+      "France": {
+        "total": 1,
+        "matched": 1,
+        "singletons": 0
+      }
+    },
+    "duration_seconds": 0.47
   }
 ]
