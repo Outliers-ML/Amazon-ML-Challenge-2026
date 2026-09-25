@@ -29,6 +29,7 @@ if [ "$#" -eq 0 ]; then
         "--train-dir" "$SCRIPT_DIR/student_resource/dataset/train"
         "--test-dir" "$SCRIPT_DIR/student_resource/dataset/test"
         "--output-dir" "$SCRIPT_DIR/output"
+        "--skip-pack"
     )
 else
     RUN_ARGS=("$@")

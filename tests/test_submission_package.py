@@ -200,3 +200,62 @@ def test_pack_submission_cli(tmp_path):
         assert "Documentation_template.md" in names
         assert "code/business_entity_resolution/README.md" in names
         assert "business_entity_resolution/code/README.md" in names
+
+
+def test_create_submission_archive_missing_files_and_direct_file(tmp_path):
+    """Test FileNotFoundError on missing files, out_dir as direct file path, and artifact exclusions (.dist-info, .pyo)."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "app.py").write_text("# app", encoding="utf-8")
+    (src_dir / "cached.pyo").write_bytes(b"pyo")
+    dist_info = src_dir / "demo-1.0.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text("metadata", encoding="utf-8")
+
+    archive_zip = tmp_path / "test_hardening.zip"
+
+    # 1. Missing output files should raise FileNotFoundError
+    empty_out = tmp_path / "empty_output"
+    empty_out.mkdir()
+    with pytest.raises(FileNotFoundError, match="Matching results file not found"):
+        create_submission_archive(
+            output_dir=empty_out,
+            code_dir=src_dir,
+            doc_file=None,
+            archive_path=archive_zip,
+        )
+
+    # Missing candidate file should also raise FileNotFoundError
+    matching_only = tmp_path / "matching_only"
+    matching_only.mkdir()
+    (matching_only / "matching_results.tsv").write_text("source1_entity_id\tmatched_entity_ids\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="Candidate pairs file not found"):
+        create_submission_archive(
+            output_dir=matching_only,
+            code_dir=src_dir,
+            doc_file=None,
+            archive_path=archive_zip,
+        )
+
+    # 2. When output_dir is a direct file path to matching_results.tsv
+    matching_file = matching_only / "matching_results.tsv"
+    candidate_file = matching_only / "candidate_pairs.tsv"
+    candidate_file.write_text("source1_entity_id\tcandidate_entity_ids\n", encoding="utf-8")
+
+    res_path = create_submission_archive(
+        output_dir=matching_file,  # direct file path
+        code_dir=src_dir,
+        doc_file=None,
+        archive_path=archive_zip,
+    )
+    assert Path(res_path).is_file()
+
+    with zipfile.ZipFile(archive_zip, "r") as zf:
+        namelist = set(zf.namelist())
+        assert "output/matching_results.tsv" in namelist
+        assert "output/candidate_pairs.tsv" in namelist
+        # Verify .pyo and .dist-info are excluded
+        for name in namelist:
+            assert not name.endswith(".pyo")
+            assert ".dist-info" not in name
+

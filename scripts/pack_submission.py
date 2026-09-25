@@ -203,7 +203,9 @@ def package_submission_zip(
                         part.startswith(".")
                         or part == "__pycache__"
                         or part.endswith(".egg-info")
+                        or part.endswith(".dist-info")
                         or part.endswith(".pyc")
+                        or part.endswith(".pyo")
                         for part in rel_p.parts
                     ):
                         continue
@@ -227,15 +229,16 @@ def create_submission_archive(
 ) -> Path:
     """Programmatic API to build competition submission zip file."""
     out_dir = Path(output_dir)
-    matching_path = out_dir / "matching_results.tsv"
-    if not matching_path.is_file() and (out_dir / "output" / "matching_results.tsv").is_file():
-        matching_path = out_dir / "output" / "matching_results.tsv"
-    elif not matching_path.is_file() and out_dir.is_file():
+    if out_dir.is_file():
         matching_path = out_dir
-
-    candidate_path = out_dir / "candidate_pairs.tsv"
-    if not candidate_path.is_file() and (out_dir / "output" / "candidate_pairs.tsv").is_file():
-        candidate_path = out_dir / "output" / "candidate_pairs.tsv"
+        candidate_path = out_dir.parent / "candidate_pairs.tsv"
+    else:
+        matching_path = out_dir / "matching_results.tsv"
+        if not matching_path.is_file() and (out_dir / "output" / "matching_results.tsv").is_file():
+            matching_path = out_dir / "output" / "matching_results.tsv"
+        candidate_path = out_dir / "candidate_pairs.tsv"
+        if not candidate_path.is_file() and (out_dir / "output" / "candidate_pairs.tsv").is_file():
+            candidate_path = out_dir / "output" / "candidate_pairs.tsv"
 
     if not matching_path.is_file():
         raise FileNotFoundError(f"Matching results file not found at: {matching_path}")
