@@ -118,3 +118,47 @@ def test_preserve_single_character_tokens_in_address():
     addr2 = norm.normalize_address("Block A")
     assert "a" in addr2.tokens
     assert addr2.clean_address == "block a"
+
+
+def test_double_metaphone_computation():
+    from src.data.normalizer import compute_double_metaphone
+    # Indian transliterations: Lakshmi vs Laxmi
+    p1, s1 = compute_double_metaphone("Lakshmi")
+    p2, s2 = compute_double_metaphone("Laxmi")
+    assert p1 == p2 or s1 == s2, f"Metaphone mismatch: {p1}/{s1} vs {p2}/{s2}"
+
+    # Indian transliterations: Choudhary vs Chowdhury
+    p_c1, s_c1 = compute_double_metaphone("Choudhary")
+    p_c2, s_c2 = compute_double_metaphone("Chowdhury")
+    assert (p_c1 and (p_c1 == p_c2 or p_c1 == s_c2)) or (s_c1 and (s_c1 == p_c2 or s_c1 == s_c2)), (
+        f"Metaphone mismatch: {p_c1}/{s_c1} vs {p_c2}/{s_c2}"
+    )
+
+    # French silent endings: Renault
+    p_renault, _ = compute_double_metaphone("Renault")
+    assert len(p_renault) > 0
+
+
+def test_french_cedex_stripping_from_numerals():
+    from src.data.normalizer import TextNormalizer
+    norm = TextNormalizer()
+    addr = "15 RUE DE RIVOLI PARIS CEDEX 09 BP 1024"
+    res = norm.normalize_address(addr)
+    # CEDEX route numbers (09, 1024) must NOT be extracted as the street number
+    assert res.street_number == "15"
+    assert "cedex" not in res.clean_address
+    assert "bp" not in res.clean_address
+    assert res.cedex_flag is True
+
+
+def test_dual_track_name_representations():
+    from src.data.normalizer import TextNormalizer
+    norm = TextNormalizer()
+    res = norm.normalize_name("Tata Motors Private Limited")
+    # clean_name_stripped should drop corporate suffixes for blocking
+    assert res.clean_name_stripped == "tata motors"
+    # canonical_name should retain standardized legal forms
+    assert "pvt ltd" in res.canonical_name or "ltd" in res.canonical_name
+    assert hasattr(res, "metaphone_primary")
+    assert hasattr(res, "metaphone_secondary")
+
