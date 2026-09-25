@@ -26,7 +26,7 @@ def test_pair_sequence_formatting():
     assert "[CLS]" in formatted or "Acme Corp" in formatted
     assert "Acme Corporation" in formatted
 
-    # Safe handling of empty / None values
+    # Safe handling of empty / None / <NA> values
     empty_res = format_pair_text(
         s1_name=None,
         s1_addr=None,
@@ -37,6 +37,17 @@ def test_pair_sequence_formatting():
     )
     assert empty_res[0] == "name:  | addr:  | country: US"
     assert empty_res[1] == "name: Acme | addr:  | country: "
+
+    na_res = format_pair_text(
+        s1_name="<NA>",
+        s1_addr="<na>",
+        s1_country="US",
+        cand_name="Acme",
+        cand_addr="<Na>",
+        cand_country="<na>",
+    )
+    assert na_res[0] == "name:  | addr:  | country: US"
+    assert na_res[1] == "name: Acme | addr:  | country: "
 
 
 def test_focal_loss_computation():
@@ -57,13 +68,20 @@ def test_focal_loss_computation():
     # For target=0 with negative logit, loss should decrease if logit decreases (grad > 0)
     assert logits.grad[1].item() > 0.0
 
-    # Numerical stability with extreme logits
+    # Numerical stability with extreme and infinite logits
     extreme_logits = torch.tensor([100.0, -100.0, 50.0, -50.0], dtype=torch.float32)
     extreme_targets = torch.tensor([1.0, 0.0, 0.0, 1.0], dtype=torch.float32)
     extreme_loss = loss_fn(extreme_logits, extreme_targets)
     assert torch.isfinite(extreme_loss)
     assert not torch.isnan(extreme_loss)
     assert extreme_loss.item() > 0.0
+
+    inf_logits = torch.tensor([float("inf"), float("-inf"), 1e9, -1e9], dtype=torch.float32)
+    inf_targets = torch.tensor([1.0, 0.0, 0.0, 1.0], dtype=torch.float32)
+    inf_loss = loss_fn(inf_logits, inf_targets)
+    assert torch.isfinite(inf_loss)
+    assert not torch.isnan(inf_loss)
+    assert inf_loss.item() > 0.0
 
     # Reduction options
     none_loss = BinaryFocalLoss(gamma=2.0, alpha=0.25, reduction="none")(logits.detach(), targets)
@@ -97,6 +115,15 @@ def test_cross_encoder_predict_and_fit_lightweight():
     # Fit lightweight model
     train_pairs = pairs * 8
     labels = [1, 0] * 8
+
+    # Validation errors when mismatched or one is None
+    with pytest.raises(ValueError, match="val_pairs and val_labels must both be provided and have matching lengths"):
+        reranker.fit(train_pairs, labels, val_pairs=pairs, val_labels=[1])
+    with pytest.raises(ValueError, match="val_pairs and val_labels must both be provided and have matching lengths"):
+        reranker.fit(train_pairs, labels, val_pairs=pairs, val_labels=None)
+    with pytest.raises(ValueError, match="val_pairs and val_labels must both be provided and have matching lengths"):
+        reranker.fit(train_pairs, labels, val_pairs=None, val_labels=[1, 0])
+
     history = reranker.fit(
         train_pairs,
         labels,
@@ -108,6 +135,7 @@ def test_cross_encoder_predict_and_fit_lightweight():
     )
     assert history is not None
     assert "loss" in history
+    assert "val_loss" in history
 
     # Inference after fit
     probs_after = reranker.predict_proba(pairs)
@@ -137,11 +165,12 @@ def test_cross_encoder_save_and_load():
         probs_loaded = loaded_reranker.predict_proba(pairs)
         np.testing.assert_allclose(probs_orig, probs_loaded, rtol=1e-5, atol=1e-5)
 
-        # Instance load
+        # Instance load with explicit device
         fresh_reranker = CrossEncoderReranker(model_name="mock", device="cpu")
-        fresh_reranker.load(tmp_dir)
+        fresh_reranker.load(tmp_dir, device="cpu")
         probs_instance_loaded = fresh_reranker.predict_proba(pairs)
         np.testing.assert_allclose(probs_orig, probs_instance_loaded, rtol=1e-5, atol=1e-5)
+
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

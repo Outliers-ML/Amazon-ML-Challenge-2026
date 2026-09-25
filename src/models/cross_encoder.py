@@ -38,13 +38,14 @@ class PairText(tuple):
 
 
 def _clean_field(val: Any) -> str:
-    """Safely sanitizes a field string, converting None / NaN to empty string."""
+    """Safely sanitizes a field string, converting None / NaN / <NA> to empty string."""
     if val is None:
         return ""
     s = str(val).strip()
-    if s.lower() in ("none", "nan", "null"):
+    if s.lower() in ("none", "nan", "null", "<na>"):
         return ""
     return s
+
 
 
 def format_pair_text(
@@ -113,16 +114,18 @@ class BinaryFocalLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         targets = targets.type_as(logits).view_as(logits)
+        logits = torch.clamp(logits, min=-80.0, max=80.0)
         bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
         p = torch.sigmoid(logits)
         p_t = p * targets + (1.0 - p) * (1.0 - targets)
-        focal_weight = (1.0 - p_t) ** self.gamma
+        focal_weight = torch.clamp(1.0 - p_t, min=1e-7) ** self.gamma
 
         if self.alpha is not None:
             alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
             focal_weight = alpha_t * focal_weight
 
         loss = focal_weight * bce_loss
+
 
         if self.reduction == "mean":
             return loss.mean()
@@ -259,11 +262,17 @@ class _HybridLoad:
 
             return _class_load
         else:
-            def _instance_load(load_dir: Union[str, Path]) -> "CrossEncoderReranker":
+            def _instance_load(
+                load_dir: Union[str, Path],
+                device: Optional[Union[str, torch.device]] = None,
+            ) -> "CrossEncoderReranker":
+                if device is not None:
+                    instance.device = torch.device(device)
                 instance._load_from_path(load_dir)
                 return instance
 
             return _instance_load
+
 
 
 class CrossEncoderReranker:
@@ -432,6 +441,12 @@ class CrossEncoderReranker:
                 f"train_pairs ({len(train_pairs)}) and labels ({len(labels)}) length mismatch"
             )
 
+        if val_pairs is not None or val_labels is not None:
+            if val_pairs is None or val_labels is None or len(val_pairs) != len(val_labels):
+                raise ValueError(
+                    "val_pairs and val_labels must both be provided and have matching lengths"
+                )
+
         self._ensure_loaded()
         self.model.train()
 
@@ -489,8 +504,10 @@ class CrossEncoderReranker:
                     loss = self.criterion(logits, targets)
 
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
                 batch_losses.append(loss.item())
+
 
             epoch_loss = float(np.mean(batch_losses)) if batch_losses else 0.0
             history["epoch_losses"].append(epoch_loss)
