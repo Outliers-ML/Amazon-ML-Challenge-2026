@@ -88,6 +88,7 @@ def run_validator(
     matching_path: Path,
     candidate_path: Path,
     test_dir: Path,
+    check_ids: bool = False,
 ) -> bool:
     """Invoke student_resource/utils/validate_submission.py and return True if successful."""
     cmd = [
@@ -97,6 +98,8 @@ def run_validator(
         "--candidate", str(candidate_path),
         "--test-dir", str(test_dir),
     ]
+    if check_ids:
+        cmd.append("--check-ids")
     print(f"Running submission validator: {' '.join(cmd)}")
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
@@ -117,15 +120,21 @@ def package_submission_zip(
     matching_path: Path,
     candidate_path: Path,
     src_dir: Path,
-    entrypoint_path: Optional[Path],
-    readme_path: Optional[Path],
-    requirements_path: Optional[Path],
-    doc_template_path: Optional[Path],
-    output_zip: Path,
-) -> None:
-    """Create compliant competition submission zip file."""
+    entrypoint_path: Optional[Path] = None,
+    readme_path: Optional[Path] = None,
+    requirements_path: Optional[Path] = None,
+    doc_template_path: Optional[Path] = None,
+    output_zip: Path = Path("outliers_submission_v3.zip"),
+    mirror_dual_structure: bool = True,
+) -> Path:
+    """Create compliant competition submission zip file with optional dual-hierarchy mirroring."""
+    output_zip = Path(output_zip)
     output_zip.parent.mkdir(parents=True, exist_ok=True)
     print(f"Creating submission archive: {output_zip}")
+
+    prefixes = ["code/business_entity_resolution/"]
+    if mirror_dual_structure:
+        prefixes.append("business_entity_resolution/code/")
 
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         # 1. Output files
@@ -133,7 +142,7 @@ def package_submission_zip(
         zf.write(candidate_path, arcname="output/candidate_pairs.tsv")
 
         # 2. Documentation template
-        if doc_template_path and doc_template_path.is_file():
+        if doc_template_path and Path(doc_template_path).is_file():
             zf.write(doc_template_path, arcname="Documentation_template.md")
         else:
             zf.writestr(
@@ -142,34 +151,53 @@ def package_submission_zip(
             )
 
         # 3. Dedicated reproduction README
-        if readme_path and readme_path.is_file() and readme_path.name != "README.md":
-            zf.write(readme_path, arcname="code/business_entity_resolution/README.md")
-        else:
-            zf.writestr(
-                "code/business_entity_resolution/README.md",
-                REPRODUCTION_README
-            )
+        for prefix in prefixes:
+            if readme_path and Path(readme_path).is_file():
+                zf.write(readme_path, arcname=f"{prefix}README.md")
+            else:
+                zf.writestr(
+                    f"{prefix}README.md",
+                    REPRODUCTION_README
+                )
 
         # 4. Entrypoint script (run_entity_resolution.py)
-        if entrypoint_path and entrypoint_path.is_file():
-            zf.write(entrypoint_path, arcname="code/business_entity_resolution/run_entity_resolution.py")
-        else:
-            print("[!] Warning: Entrypoint script not found; omitting from zip.")
+        for prefix in prefixes:
+            if entrypoint_path and Path(entrypoint_path).is_file():
+                zf.write(entrypoint_path, arcname=f"{prefix}run_entity_resolution.py")
+            elif (PROJECT_ROOT / "scripts" / "run_entity_resolution.py").is_file():
+                zf.write(
+                    PROJECT_ROOT / "scripts" / "run_entity_resolution.py",
+                    arcname=f"{prefix}run_entity_resolution.py"
+                )
+            else:
+                print(f"[!] Warning: Entrypoint script not found; omitting from {prefix}.")
 
         # 5. Requirements
-        if requirements_path and requirements_path.is_file():
-            zf.write(requirements_path, arcname="code/business_entity_resolution/requirements.txt")
-        else:
-            zf.writestr(
-                "code/business_entity_resolution/requirements.txt",
-                "numpy\npandas\nlightgbm\nrapidfuzz\nscikit-learn\n"
-            )
+        for prefix in prefixes:
+            if requirements_path and Path(requirements_path).is_file():
+                zf.write(requirements_path, arcname=f"{prefix}requirements.txt")
+            elif (PROJECT_ROOT / "requirements.txt").is_file():
+                zf.write(
+                    PROJECT_ROOT / "requirements.txt",
+                    arcname=f"{prefix}requirements.txt"
+                )
+            else:
+                zf.writestr(
+                    f"{prefix}requirements.txt",
+                    "numpy\npandas\nlightgbm\nrapidfuzz\nscikit-learn\n"
+                )
 
         # 6. Source code directory
-        if src_dir and src_dir.is_dir():
-            for f in sorted(src_dir.rglob("*")):
+        if src_dir and Path(src_dir).is_dir():
+            src_path = Path(src_dir)
+            if (src_path / "src").is_dir():
+                effective_src = src_path / "src"
+            else:
+                effective_src = src_path
+
+            for f in sorted(effective_src.rglob("*")):
                 if f.is_file():
-                    rel_p = f.relative_to(src_dir)
+                    rel_p = f.relative_to(effective_src)
                     # Exclude pycache, egg-info, pytest, hidden files
                     if any(
                         part.startswith(".")
@@ -179,10 +207,52 @@ def package_submission_zip(
                         for part in rel_p.parts
                     ):
                         continue
-                    arcname = f"code/business_entity_resolution/src/{rel_p.as_posix()}"
-                    zf.write(f, arcname=arcname)
+                    for prefix in prefixes:
+                        arcname = f"{prefix}src/{rel_p.as_posix()}"
+                        zf.write(f, arcname=arcname)
 
     print(f"[+] Successfully generated {output_zip} ({output_zip.stat().st_size} bytes)")
+    return output_zip
+
+
+def create_submission_archive(
+    output_dir: str | Path,
+    code_dir: str | Path,
+    doc_file: Optional[str | Path],
+    archive_path: str | Path,
+    entrypoint_path: Optional[str | Path] = None,
+    readme_path: Optional[str | Path] = None,
+    requirements_path: Optional[str | Path] = None,
+    mirror_dual_structure: bool = True,
+) -> Path:
+    """Programmatic API to build competition submission zip file."""
+    out_dir = Path(output_dir)
+    matching_path = out_dir / "matching_results.tsv"
+    if not matching_path.is_file() and (out_dir / "output" / "matching_results.tsv").is_file():
+        matching_path = out_dir / "output" / "matching_results.tsv"
+    elif not matching_path.is_file() and out_dir.is_file():
+        matching_path = out_dir
+
+    candidate_path = out_dir / "candidate_pairs.tsv"
+    if not candidate_path.is_file() and (out_dir / "output" / "candidate_pairs.tsv").is_file():
+        candidate_path = out_dir / "output" / "candidate_pairs.tsv"
+
+    if not matching_path.is_file():
+        raise FileNotFoundError(f"Matching results file not found at: {matching_path}")
+    if not candidate_path.is_file():
+        raise FileNotFoundError(f"Candidate pairs file not found at: {candidate_path}")
+
+    return package_submission_zip(
+        matching_path=matching_path,
+        candidate_path=candidate_path,
+        src_dir=Path(code_dir),
+        entrypoint_path=Path(entrypoint_path) if entrypoint_path else None,
+        readme_path=Path(readme_path) if readme_path else None,
+        requirements_path=Path(requirements_path) if requirements_path else None,
+        doc_template_path=Path(doc_file) if doc_file else None,
+        output_zip=Path(archive_path),
+        mirror_dual_structure=mirror_dual_structure,
+    )
 
 
 def main():
@@ -211,8 +281,8 @@ def main():
     )
     parser.add_argument(
         "--output-zip", "-o",
-        default=str(PROJECT_ROOT / "outliers_submission.zip"),
-        help="Target submission zip path (default: outliers_submission.zip)",
+        default=str(PROJECT_ROOT / "outliers_submission_v3.zip"),
+        help="Target submission zip path (default: outliers_submission_v3.zip)",
     )
     parser.add_argument(
         "--src-dir",
@@ -248,6 +318,16 @@ def main():
         "--skip-validation",
         action="store_true",
         help="Skip executing the submission validator gate.",
+    )
+    parser.add_argument(
+        "--check-ids",
+        action="store_true",
+        help="Run validator with --check-ids flag enabled.",
+    )
+    parser.add_argument(
+        "--no-mirror",
+        action="store_true",
+        help="Do not mirror hierarchy into business_entity_resolution/code/.",
     )
 
     args = parser.parse_args()
@@ -316,7 +396,13 @@ def main():
     # Validate output files if validator and test directory exist
     if not args.skip_validation:
         if validator_path and test_dir:
-            passed = run_validator(validator_path, matching_path, candidate_path, test_dir)
+            passed = run_validator(
+                validator_path,
+                matching_path,
+                candidate_path,
+                test_dir,
+                check_ids=args.check_ids,
+            )
             if not passed:
                 print("[-] Validation check failed. Aborting packaging.", file=sys.stderr)
                 sys.exit(1)
@@ -337,6 +423,7 @@ def main():
         requirements_path=requirements_path,
         doc_template_path=doc_template_path,
         output_zip=output_zip,
+        mirror_dual_structure=not args.no_mirror,
     )
 
 
