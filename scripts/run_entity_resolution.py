@@ -543,15 +543,17 @@ def main():
                 p_xgb_arr = chunk_probs
                 p_cat_arr = chunk_probs
 
+            min_buffer_threshold = min(args.ce_cutoff, tau_secondary) if args.use_cross_encoder else tau_secondary
             for s_id, c_id, p_gbdt, p_xgb, p_cat in zip(
                 batch_s1_ids, batch_cand_ids, chunk_probs, p_xgb_arr, p_cat_arr
             ):
-                entity_candidate_records[s_id].append({
-                    "cand_id": c_id,
-                    "p_gbdt": float(p_gbdt),
-                    "p_xgb": float(p_xgb),
-                    "p_cat": float(p_cat),
-                })
+                if p_gbdt >= min_buffer_threshold:
+                    entity_candidate_records[s_id].append({
+                        "cand_id": c_id,
+                        "p_gbdt": float(p_gbdt),
+                        "p_xgb": float(p_xgb),
+                        "p_cat": float(p_cat),
+                    })
 
             total_pairs_processed += len(batch_s1)
             if total_pairs_processed % 200000 == 0 or (total_pairs_processed < 200000 and total_pairs_processed % 50000 == 0):

@@ -195,6 +195,60 @@ def test_meta_probability_blending_scalar_and_vectorized():
     assert len(empty_res) == 0
 
 
+def test_compute_meta_probability_nan_safety():
+    """Verify compute_meta_probability handles np.float32(np.nan), float('nan'), and None safely."""
+    # Scalar: np.float32(np.nan)
+    p_nan32 = np.float32(np.nan)
+    res_nan32 = compute_meta_probability(p_ce=p_nan32, p_xgb=0.8, p_cat=0.4, w_xgb=0.25, w_cat=0.25)
+    # Should fall back to GBDT: (0.25*0.8 + 0.25*0.4) / (0.25 + 0.25) = 0.60
+    assert pytest.approx(res_nan32, abs=1e-5) == 0.60
+
+    # Scalar: float("nan")
+    res_float_nan = compute_meta_probability(p_ce=float("nan"), p_xgb=0.8, p_cat=0.4, w_xgb=0.25, w_cat=0.25)
+    assert pytest.approx(res_float_nan, abs=1e-5) == 0.60
+
+    # Scalar: None
+    res_none = compute_meta_probability(p_ce=None, p_xgb=0.8, p_cat=0.4, w_xgb=0.25, w_cat=0.25)
+    assert pytest.approx(res_none, abs=1e-5) == 0.60
+
+    # Vectorized: mixed np.float32(nan), float(nan), None, valid float
+    ce_arr = [np.float32(np.nan), float("nan"), None, np.float32(0.9)]
+    xgb_arr = np.array([0.8, 0.8, 0.8, 0.8], dtype=np.float32)
+    cat_arr = np.array([0.4, 0.4, 0.4, 0.4], dtype=np.float32)
+    vec_res = compute_meta_probability_vectorized(ce_arr, xgb_arr, cat_arr, w_ce=0.5, w_xgb=0.25, w_cat=0.25)
+    assert pytest.approx(vec_res[0], abs=1e-5) == 0.60
+    assert pytest.approx(vec_res[1], abs=1e-5) == 0.60
+    assert pytest.approx(vec_res[2], abs=1e-5) == 0.60
+    # 0.5*0.9 + 0.25*0.8 + 0.25*0.4 = 0.45 + 0.20 + 0.10 = 0.75
+    assert pytest.approx(vec_res[3], abs=1e-5) == 0.75
+
+
+def test_compute_meta_probability_unnormalized_weights():
+    """Verify compute_meta_probability properly normalizes arbitrary weights."""
+    # When p_ce is present: weights w_ce=2.0, w_xgb=1.0, w_cat=1.0 (sum=4.0)
+    # Expected: (2.0 * 0.8 + 1.0 * 0.6 + 1.0 * 0.4) / 4.0 = (1.6 + 0.6 + 0.4) / 4.0 = 2.6 / 4.0 = 0.65
+    p_with_ce = compute_meta_probability(
+        p_ce=0.8, p_xgb=0.6, p_cat=0.4, w_ce=2.0, w_xgb=1.0, w_cat=1.0
+    )
+    assert pytest.approx(p_with_ce, abs=1e-5) == 0.65
+
+    # When p_ce is None: weights w_xgb=1.0, w_cat=1.0 (sum=2.0)
+    # Expected: (1.0 * 0.6 + 1.0 * 0.4) / 2.0 = 0.50
+    p_no_ce = compute_meta_probability(
+        p_ce=None, p_xgb=0.6, p_cat=0.4, w_ce=2.0, w_xgb=1.0, w_cat=1.0
+    )
+    assert pytest.approx(p_no_ce, abs=1e-5) == 0.50
+
+    # Vectorized check with unnormalized weights
+    ce_arr = [0.8, None]
+    xgb_arr = np.array([0.6, 0.6], dtype=np.float32)
+    cat_arr = np.array([0.4, 0.4], dtype=np.float32)
+    vec_res = compute_meta_probability_vectorized(
+        ce_arr, xgb_arr, cat_arr, w_ce=2.0, w_xgb=1.0, w_cat=1.0
+    )
+    np.testing.assert_allclose(vec_res, [0.65, 0.50], atol=1e-5)
+
+
 # =========================================================================
 # 3. Hard Negative Mining
 # =========================================================================
@@ -433,6 +487,33 @@ def test_mine_hard_negatives_edge_cases():
     assert mine_hard_negatives({"A": ["B"]}, {"A": ["B"]}, max_negatives_per_entity=0) == [("A", "B", 1)]
 
 
+def test_mine_hard_negatives_string_inputs():
+    """Verify mine_hard_negatives handles string inputs for ground_truth and blocker_candidates without splitting strings into chars."""
+    ground_truth = {"S1": "S2-01"}
+    blocker_candidates = {"S1": "S2-02"}
+
+    mined = mine_hard_negatives(
+        blocker_candidates=blocker_candidates,
+        ground_truth=ground_truth,
+        sample_size=10,
+        seed=42,
+    )
+    # Must yield exactly 1 positive and 1 negative: ('S1', 'S2-01', 1) and ('S1', 'S2-02', 0)
+    assert len(mined) == 2
+    assert ("S1", "S2-01", 1) in mined
+    assert ("S1", "S2-02", 0) in mined
+
+    # Also test single string for blocker candidates when GT is list
+    mined2 = mine_hard_negatives(
+        blocker_candidates={"S1": "S2-02"},
+        ground_truth={"S1": ["S2-01"]},
+        sample_size=10,
+    )
+    assert len(mined2) == 2
+    assert ("S1", "S2-01", 1) in mined2
+    assert ("S1", "S2-02", 0) in mined2
+
+
 def test_ensemble_trainer_predict_components():
     """Verify EREnsembleTrainer.predict_components returns per-model positive probabilities."""
     from src.pipeline.er_trainer import EREnsembleTrainer
@@ -460,6 +541,31 @@ def test_ensemble_trainer_predict_components():
     for name, p in preds.items():
         assert len(p) == len(X)
         assert np.all(p >= 0.0) and np.all(p <= 1.0)
+
+
+def test_ensemble_trainer_xgboost_early_stopping():
+    """Verify EREnsembleTrainer configures early_stopping_rounds=50 for XGBoost when validation set is present."""
+    from src.pipeline.er_trainer import EREnsembleTrainer
+
+    X = np.array([
+        [0.1, 0.2],
+        [0.9, 0.8],
+        [0.2, 0.3],
+        [0.8, 0.7],
+        [0.1, 0.1],
+        [0.9, 0.9],
+        [0.3, 0.2],
+        [0.7, 0.8],
+    ], dtype=np.float32)
+    y = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
+    groups = ["G1", "G1", "G2", "G2", "G3", "G3", "G4", "G4"]
+
+    trainer = EREnsembleTrainer(models=["xgboost"], n_splits=2, seed=42)
+    trainer.train(X, y, groups)
+
+    xgb_model = trainer.models_.get("xgboost")
+    assert xgb_model is not None
+    assert xgb_model.get_params().get("early_stopping_rounds") == 50
 
 
 def test_run_entity_resolution_cli_with_cross_encoder_and_gpu(tmp_path: Path):

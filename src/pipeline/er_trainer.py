@@ -83,6 +83,16 @@ def filter_candidates_dataframe(
     return filtered.head(max_keep)
 
 
+def _is_nan(val: Any) -> bool:
+    """Check if value is None, unparseable, or NaN (handles float, np.float32, np.float64, etc.)."""
+    if val is None:
+        return True
+    try:
+        return bool(math.isnan(float(val)))
+    except (ValueError, TypeError):
+        return True
+
+
 def compute_meta_probability(
     p_ce: Optional[float],
     p_xgb: float,
@@ -94,21 +104,26 @@ def compute_meta_probability(
     """Compute meta probability blending Cross-Encoder and GBDT model predictions.
 
     If p_ce is present:
-        p_final = w_ce * p_ce + w_xgb * p_xgb + w_cat * p_cat
-    If p_ce is None:
+        total_w = w_ce + w_xgb + w_cat
+        p_final = (w_ce / total_w) * p_ce + (w_xgb / total_w) * p_xgb + (w_cat / total_w) * p_cat
+    If p_ce is None/NaN:
         gbdt_total_w = w_xgb + w_cat
         p_final = (w_xgb / gbdt_total_w) * p_xgb + (w_cat / gbdt_total_w) * p_cat
     """
-    has_ce = p_ce is not None and not (isinstance(p_ce, float) and math.isnan(p_ce))
+    has_ce = not _is_nan(p_ce)
 
     if has_ce:
-        p_final = w_ce * float(p_ce) + w_xgb * float(p_xgb) + w_cat * float(p_cat)
+        total_w = float(w_ce + w_xgb + w_cat)
+        if total_w > 0:
+            p_final = (w_ce / total_w) * float(p_ce) + (w_xgb / total_w) * float(p_xgb) + (w_cat / total_w) * float(p_cat)
+        else:
+            p_final = (float(p_ce) + float(p_xgb) + float(p_cat)) / 3.0
     else:
-        gbdt_total_w = w_xgb + w_cat
+        gbdt_total_w = float(w_xgb + w_cat)
         if gbdt_total_w > 0:
             p_final = (w_xgb / gbdt_total_w) * float(p_xgb) + (w_cat / gbdt_total_w) * float(p_cat)
         else:
-            p_final = 0.5 * float(p_xgb) + 0.5 * float(p_cat)
+            p_final = (float(p_xgb) + float(p_cat)) / 2.0
 
     return float(np.clip(p_final, 0.0, 1.0))
 
@@ -129,22 +144,31 @@ def compute_meta_probability_vectorized(
     p_xgb = np.asarray(p_xgb_arr, dtype=np.float32)
     p_cat = np.asarray(p_cat_arr, dtype=np.float32)
 
-    # Convert p_ce_arr to float array with np.nan for None
-    p_ce_clean = np.array([np.nan if x is None else float(x) for x in p_ce_arr], dtype=np.float32)
+    clean_ce_list = []
+    for x in p_ce_arr:
+        if _is_nan(x):
+            clean_ce_list.append(np.nan)
+        else:
+            clean_ce_list.append(float(x))
+    p_ce_clean = np.array(clean_ce_list, dtype=np.float32)
 
     has_ce = ~np.isnan(p_ce_clean)
     p_final = np.zeros(n, dtype=np.float32)
 
     if np.any(has_ce):
-        p_final[has_ce] = (
-            w_ce * p_ce_clean[has_ce]
-            + w_xgb * p_xgb[has_ce]
-            + w_cat * p_cat[has_ce]
-        )
+        total_w = float(w_ce + w_xgb + w_cat)
+        if total_w > 0:
+            p_final[has_ce] = (
+                (w_ce / total_w) * p_ce_clean[has_ce]
+                + (w_xgb / total_w) * p_xgb[has_ce]
+                + (w_cat / total_w) * p_cat[has_ce]
+            )
+        else:
+            p_final[has_ce] = (p_ce_clean[has_ce] + p_xgb[has_ce] + p_cat[has_ce]) / 3.0
 
     no_ce = ~has_ce
     if np.any(no_ce):
-        gbdt_total_w = w_xgb + w_cat
+        gbdt_total_w = float(w_xgb + w_cat)
         if gbdt_total_w > 0:
             p_final[no_ce] = (
                 (w_xgb / gbdt_total_w) * p_xgb[no_ce]
@@ -191,9 +215,13 @@ def mine_hard_negatives(
 
     for s1_id in sampled_s1:
         gt_targets = ground_truth.get(s1_id, [])
+        if isinstance(gt_targets, str):
+            gt_targets = [gt_targets]
         gt_set = set(str(t).strip() for t in gt_targets if str(t).strip())
 
         cands = blocker_candidates.get(s1_id, [])
+        if isinstance(cands, str):
+            cands = [cands]
         cand_list = [str(c).strip() for c in cands if str(c).strip()]
 
         seen_pairs: Set[Tuple[str, str]] = set()
@@ -495,6 +523,8 @@ class EREnsembleTrainer:
                 }
                 if self.use_gpu:
                     xgb_params["device"] = "cuda"
+                if can_eval:
+                    xgb_params["early_stopping_rounds"] = 50
                 m = xgb.XGBClassifier(**xgb_params)
                 if can_eval:
                     m.fit(
