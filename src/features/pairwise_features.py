@@ -15,32 +15,34 @@ from src.data.normalizer import NormalizedAddress, NormalizedName, TextNormalize
 
 
 class PairwiseFeatureExtractor:
+    FEATURE_NAMES = [
+        "name_exact_match",
+        "name_clean_exact_match",
+        "name_jaro_winkler",
+        "name_levenshtein_ratio",
+        "name_token_sort_ratio",
+        "name_token_set_ratio",
+        "name_char_3gram_jaccard",
+        "name_length_diff",
+        "name_length_ratio",
+        "name_first_token_match",
+        "addr_exact_match",
+        "addr_token_jaccard",
+        "addr_token_sort_ratio",
+        "addr_token_set_ratio",
+        "addr_street_num_status",
+        "addr_postal_code_status",
+        "addr_is_empty",
+        "name_in_address_cross",
+        "is_source2",
+        "is_source3",
+        "blocking_rank",
+        "blocking_score",
+    ]
+
     def __init__(self) -> None:
         self.normalizer = TextNormalizer()
-        self.feature_names = [
-            "name_exact_match",
-            "name_clean_exact_match",
-            "name_jaro_winkler",
-            "name_levenshtein_ratio",
-            "name_token_sort_ratio",
-            "name_token_set_ratio",
-            "name_char_3gram_jaccard",
-            "name_length_diff",
-            "name_length_ratio",
-            "name_first_token_match",
-            "addr_exact_match",
-            "addr_token_jaccard",
-            "addr_token_sort_ratio",
-            "addr_token_set_ratio",
-            "addr_street_num_status",
-            "addr_postal_code_status",
-            "addr_is_empty",
-            "name_in_address_cross",
-            "is_source2",
-            "is_source3",
-            "blocking_rank",
-            "blocking_score",
-        ]
+        self.feature_names = list(self.FEATURE_NAMES)
 
     def _get_normalized_name(self, row: Dict) -> NormalizedName:
         if "_norm_name" in row and isinstance(row["_norm_name"], NormalizedName):

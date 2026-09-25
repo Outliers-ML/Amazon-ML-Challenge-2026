@@ -33,6 +33,7 @@ import pandas as pd
 from src.data.blocking import MultiKeyBlocker
 from src.features.pairwise_features import PairwiseFeatureExtractor
 from src.pipeline.er_trainer import ERModelTrainer, optimize_f05_threshold
+from src.utils.experiment_tracker import ExperimentTracker
 
 
 def write_matching_results(
@@ -141,8 +142,36 @@ def main():
         action="store_true",
         help="Skip calling pack_submission.py at the end of the run",
     )
+    parser.add_argument(
+        "--experiment-name",
+        default="Baseline-LGBM",
+        help="Experiment run name for tracking and dashboard (default: Baseline-LGBM)",
+    )
+    parser.add_argument(
+        "--no-track",
+        action="store_true",
+        help="Disable logging experiment to tracker/dashboard ledger",
+    )
 
     args = parser.parse_args()
+
+    # Initialize experiment tracker
+    tracker = None
+    if not args.no_track:
+        ledger_path = PROJECT_ROOT / "experiments" / "runs.json"
+        tracker = ExperimentTracker(ledger_path=ledger_path, use_mlflow=False)
+        tracker.start_run(
+            run_name=args.experiment_name,
+            params={
+                "model_type": "LightGBM",
+                "sample_train_s1": args.sample_train_s1,
+                "max_candidates": args.max_candidates,
+                "max_postings": args.max_postings,
+                "n_splits": args.n_splits,
+                "seed": args.seed,
+                "infer_chunk_size": args.infer_chunk_size,
+            },
+        )
 
     train_dir = Path(args.train_dir)
     test_dir = Path(args.test_dir)
@@ -285,11 +314,20 @@ def main():
         val_entities = set(s1_groups[i] for i in val_idx)
         val_gt_map = {s1: gt_map.get(s1, set()) for s1 in val_entities}
 
-        best_tau, best_score = optimize_f05_threshold(val_s1, val_cands, probs_val_blocker, val_gt_map)
+        best_tau, best_score, tau_curve, score_curve = optimize_f05_threshold(
+            val_s1, val_cands, probs_val_blocker, val_gt_map, return_curve=True
+        )
         print(f"[+] Optimal threshold tau* = {best_tau:.4f} with validation Macro F_0.5 = {best_score:.4f}")
+
+        if tracker:
+            tracker.log_threshold_curve(tau_curve, score_curve)
+            if hasattr(model, "feature_importances_"):
+                fi = dict(zip(extractor.FEATURE_NAMES, [float(x) for x in model.feature_importances_]))
+                tracker.log_feature_importances(fi)
     else:
         print("[!] Warning: Insufficient class diversity in training pairs. Using fallback threshold tau = 0.50")
         best_tau = 0.50
+        best_score = 0.0
         model = None
 
     if args.tau is not None:
@@ -319,6 +357,8 @@ def main():
 
     unique_test_countries = test_s1["country"].fillna("UNKNOWN").unique()
     print(f"Dynamic test partitions identified ({len(unique_test_countries)}): {list(unique_test_countries)}")
+
+    partition_summaries: Dict[str, Dict[str, int]] = {}
 
     for p_idx, country in enumerate(unique_test_countries):
         is_first = (p_idx == 0)
@@ -402,12 +442,34 @@ def main():
         )
 
         n_non_empty = sum(1 for m in part_matches.values() if m)
+        partition_summaries[country] = {
+            "total": len(part_matches),
+            "matched": n_non_empty,
+            "singletons": len(part_matches) - n_non_empty,
+        }
         print(f"  Partition '{country}' completed: {len(part_matches)} S1 rows written "
               f"({n_non_empty} matched, {len(part_matches) - n_non_empty} singletons).")
 
     print("\n[+] Dynamic test set inference completed.")
     print(f"  matching_results: {matching_file}")
     print(f"  candidate_pairs:  {candidate_file}")
+
+    if tracker:
+        tot_matched = sum(p["matched"] for p in partition_summaries.values())
+        tot_singletons = sum(p["singletons"] for p in partition_summaries.values())
+        tracker.log_metrics({
+            "macro_f05": best_score,
+            "best_tau": best_tau,
+            "train_pairs": len(pair_s1_rows),
+            "train_positives": sum(y_list),
+            "total_test_s1": len(test_s1),
+            "total_test_matched": tot_matched,
+            "total_test_singletons": tot_singletons,
+        })
+        tracker.log_partition_summary(partition_summaries)
+        completed_run = tracker.end_run()
+        if completed_run:
+            print(f"[+] Run '{args.experiment_name}' recorded in experiment tracker (ID: {completed_run['run_id']})")
 
     # =========================================================================
     # Stage 3: Packaging & Validation Gate

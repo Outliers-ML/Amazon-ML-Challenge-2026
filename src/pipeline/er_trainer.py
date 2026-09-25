@@ -44,7 +44,8 @@ def optimize_f05_threshold(
     tau_steps: int = 25,
     min_tau: float = 0.50,
     max_tau: float = 0.95,
-) -> Tuple[float, float]:
+    return_curve: bool = False,
+) -> Tuple[float, float] | Tuple[float, float, List[float], List[float]]:
     """Find threshold tau* in [min_tau, max_tau] maximizing macro F_0.5."""
     if not (len(s1_ids) == len(cand_ids) == len(probs)):
         raise ValueError(
@@ -52,7 +53,7 @@ def optimize_f05_threshold(
             f"len(cand_ids)={len(cand_ids)}, len(probs)={len(probs)}"
         )
 
-    thresholds = np.linspace(min_tau, max_tau, tau_steps)
+    thresholds = [float(t) for t in np.linspace(min_tau, max_tau, tau_steps)]
     scores = []
     for tau in thresholds:
         pred_map: Dict[str, List[str]] = {s1: [] for s1 in gt_map.keys()}
@@ -69,6 +70,8 @@ def optimize_f05_threshold(
     best_tau = float(np.median(plateau_taus)) if plateau_taus else float(thresholds[0])
     best_score = float(max_score)
 
+    if return_curve:
+        return best_tau, best_score, thresholds, scores
     return best_tau, best_score
 
 
