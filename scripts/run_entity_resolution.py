@@ -8,6 +8,7 @@ partition-by-partition test set inference, and automated submission packaging.
 
 import argparse
 from pathlib import Path
+import pickle
 import subprocess
 import sys
 from typing import Dict, List, Optional, Set
@@ -153,6 +154,31 @@ def main():
         help="Use multi-model ensemble (LightGBM + CatBoost + XGBoost) instead of single LightGBM",
     )
     parser.add_argument(
+        "--save-model",
+        default=None,
+        help="Path to save trained model and calibrated threshold (e.g. models_saved/ensemble.pkl)",
+    )
+    parser.add_argument(
+        "--load-model",
+        default=None,
+        help="Path to load pre-trained model and calibrated threshold from disk",
+    )
+    parser.add_argument(
+        "--train-only",
+        action="store_true",
+        help="Run only Stage 1 (train & calibrate) and exit after saving model",
+    )
+    parser.add_argument(
+        "--countries",
+        default=None,
+        help="Comma-separated subset of countries to process in test inference (default: all countries)",
+    )
+    parser.add_argument(
+        "--append-output",
+        action="store_true",
+        help="Append to existing matching_results.tsv and candidate_pairs.tsv instead of overwriting",
+    )
+    parser.add_argument(
         "--no-track",
         action="store_true",
         help="Disable logging experiment to tracker/dashboard ledger",
@@ -193,21 +219,38 @@ def main():
     matching_file = output_dir / "matching_results.tsv"
     candidate_file = output_dir / "candidate_pairs.tsv"
 
-    # Reset output files
-    if matching_file.exists():
-        matching_file.unlink()
-    if candidate_file.exists():
-        candidate_file.unlink()
+    # Reset output files unless append_output is specified
+    if not args.append_output:
+        if matching_file.exists():
+            matching_file.unlink()
+        if candidate_file.exists():
+            candidate_file.unlink()
 
     blocker = MultiKeyBlocker(max_candidates=args.max_candidates, max_postings=args.max_postings)
     extractor = PairwiseFeatureExtractor()
 
     # =========================================================================
-    # Stage 1: Load training data, run blocking, train model, calibrate tau*
+    # Stage 1: Training & Threshold Calibration
     # =========================================================================
-    print("=" * 60)
-    print("Stage 1: Training & Threshold Calibration")
-    print("=" * 60)
+    if args.load_model:
+        load_p = Path(args.load_model)
+        if not load_p.is_file() and (PROJECT_ROOT / load_p).is_file():
+            load_p = PROJECT_ROOT / load_p
+        print("=" * 60)
+        print(f"Stage 1: Loading Pre-Trained Model from {load_p}")
+        print("=" * 60)
+        with open(load_p, "rb") as f:
+            model_data = pickle.load(f)
+            model = model_data["model"]
+            best_tau = float(model_data["best_tau"])
+            best_score = float(model_data.get("best_score", 0.0))
+            pair_s1_rows = model_data.get("pair_s1_rows", [])
+            y_list = model_data.get("y_list", [])
+        print(f"[+] Loaded pre-trained model: optimal tau* = {best_tau:.4f} (validation Macro F_0.5 = {best_score:.4f})")
+    else:
+        print("=" * 60)
+        print("Stage 1: Training & Threshold Calibration")
+        print("=" * 60)
 
     tr_s1_path = train_dir / "train_source1.tsv"
     tr_s2_path = train_dir / "train_source2.tsv"
@@ -347,9 +390,28 @@ def main():
         best_score = 0.0
         model = None
 
+        if args.save_model:
+            save_p = Path(args.save_model)
+            if not save_p.is_absolute():
+                save_p = PROJECT_ROOT / save_p
+            save_p.parent.mkdir(parents=True, exist_ok=True)
+            with open(save_p, "wb") as f:
+                pickle.dump({
+                    "model": model,
+                    "best_tau": best_tau,
+                    "best_score": best_score,
+                    "pair_s1_rows": pair_s1_rows if 'pair_s1_rows' in locals() else [],
+                    "y_list": y_list if 'y_list' in locals() else [],
+                }, f)
+            print(f"[+] Saved trained model and calibrated threshold to {save_p}")
+
     if args.tau is not None:
         best_tau = args.tau
         print(f"[!] Overriding threshold with user-specified tau = {best_tau:.4f}")
+
+    if args.train_only:
+        print("\n[✔] Stage 1 (Training & Calibration) completed successfully. Exiting due to --train-only.")
+        return
 
     # =========================================================================
     # Stage 2: Dynamic Test Set Processing (Partition by Country)
@@ -373,12 +435,14 @@ def main():
     print(f"Test entities — S1: {len(test_s1)}, S2: {len(test_s2)}, S3: {len(test_s3)}")
 
     unique_test_countries = test_s1["country"].fillna("UNKNOWN").unique()
-    print(f"Dynamic test partitions identified ({len(unique_test_countries)}): {list(unique_test_countries)}")
+    if args.countries:
+        selected_c = [c.strip() for c in args.countries.split(",") if c.strip()]
+        unique_test_countries = [c for c in unique_test_countries if c in selected_c]
+    print(f"Dynamic test partitions to process ({len(unique_test_countries)}): {list(unique_test_countries)}")
 
     partition_summaries: Dict[str, Dict[str, int]] = {}
 
     for p_idx, country in enumerate(unique_test_countries):
-        is_first = (p_idx == 0)
         s1_part = test_s1[test_s1["country"].fillna("UNKNOWN") == country]
         s2_part = test_s2[test_s2["country"].fillna("UNKNOWN") == country]
         s3_part = test_s3[test_s3["country"].fillna("UNKNOWN") == country]
@@ -394,11 +458,12 @@ def main():
                 part_cands[s1_id] = []
 
         # Stream write candidate pairs
+        cand_has_content = candidate_file.exists() and candidate_file.stat().st_size > 0
         MultiKeyBlocker.write_candidate_pairs(
             part_cands,
             candidate_file,
-            append=(not is_first),
-            write_header=is_first,
+            append=cand_has_content,
+            write_header=(not cand_has_content),
         )
 
         # 2. Pairwise Feature Extraction & Inference
@@ -459,11 +524,12 @@ def main():
             process_batch()
 
         # Stream write matching results
+        match_has_content = matching_file.exists() and matching_file.stat().st_size > 0
         write_matching_results(
             part_matches,
             matching_file,
-            append=(not is_first),
-            write_header=is_first,
+            append=match_has_content,
+            write_header=(not match_has_content),
         )
 
         n_non_empty = sum(1 for m in part_matches.values() if m)
@@ -500,28 +566,36 @@ def main():
     # Stage 3: Packaging & Validation Gate
     # =========================================================================
     if not args.skip_pack:
-        print("\n" + "=" * 60)
-        print("Stage 3: Validation Gate & Submission Packaging")
-        print("=" * 60)
-
-        pack_script = Path(__file__).resolve().parent / "pack_submission.py"
-        if not pack_script.is_file():
-            pack_script = Path(__file__).resolve().parent.parent / "scripts" / "pack_submission.py"
-        if pack_script.is_file():
-            pack_cmd = [
-                sys.executable,
-                str(pack_script),
-                "--matching", str(matching_file),
-                "--candidate", str(candidate_file),
-                "--test-dir", str(test_dir),
-                "--output-zip", str(args.zip_name),
-            ]
-            res = subprocess.run(pack_cmd)
-            if res.returncode != 0:
-                print(f"[-] Error: pack_submission failed with exit code {res.returncode}", file=sys.stderr)
-                sys.exit(res.returncode)
+        total_s1_written = 0
+        if matching_file.exists():
+            with open(matching_file, "r", encoding="utf-8") as f:
+                header = f.readline()
+                total_s1_written = sum(1 for _ in f)
+        if total_s1_written < len(test_s1):
+            print(f"\n[!] Note: Partial matching results written ({total_s1_written:,} / {len(test_s1):,} S1 entities). Skipping packaging until all partitions are complete.")
         else:
-            print("[!] Note: pack_submission.py not found; skipping automatic packaging step.")
+            print("\n" + "=" * 60)
+            print("Stage 3: Validation Gate & Submission Packaging")
+            print("=" * 60)
+
+            pack_script = Path(__file__).resolve().parent / "pack_submission.py"
+            if not pack_script.is_file():
+                pack_script = Path(__file__).resolve().parent.parent / "scripts" / "pack_submission.py"
+            if pack_script.is_file():
+                pack_cmd = [
+                    sys.executable,
+                    str(pack_script),
+                    "--matching", str(matching_file),
+                    "--candidate", str(candidate_file),
+                    "--test-dir", str(test_dir),
+                    "--output-zip", str(args.zip_name),
+                ]
+                res = subprocess.run(pack_cmd)
+                if res.returncode != 0:
+                    print(f"[-] Error: pack_submission failed with exit code {res.returncode}", file=sys.stderr)
+                    sys.exit(res.returncode)
+            else:
+                print("[!] Note: pack_submission.py not found; skipping automatic packaging step.")
 
     print("\n[✔] Entity Resolution pipeline finished successfully.")
 
