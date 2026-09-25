@@ -1,7 +1,7 @@
 """Model training and Macro F_0.5 decision threshold calibration for Entity Resolution."""
 
 import math
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 import catboost as cb
 import lightgbm as lgb
 import numpy as np
@@ -11,13 +11,26 @@ import xgboost as xgb
 
 
 def filter_candidates_for_cross_encoder(
-    candidates: Sequence[Dict[str, Any]],
+    candidates: Union[Sequence[Dict[str, Any]], pd.DataFrame],
     cutoff: float = 0.12,
     max_keep: int = 8,
     prob_key: str = "p_gbdt",
-) -> List[Dict[str, Any]]:
-    """Filter candidate items where probability >= cutoff and retain at most max_keep."""
-    if not candidates:
+    s1_key: str = "s1_id",
+) -> Union[List[Dict[str, Any]], pd.DataFrame]:
+    """Filter candidate items where probability >= cutoff and retain at most max_keep.
+
+    Supports both Sequence[Dict[str, Any]] and pd.DataFrame inputs.
+    """
+    if isinstance(candidates, pd.DataFrame):
+        return filter_candidates_dataframe(
+            candidates,
+            cutoff=cutoff,
+            max_keep=max_keep,
+            prob_col=prob_key,
+            s1_col=s1_key,
+        )
+
+    if candidates is None or len(candidates) == 0:
         return []
     filtered = []
     for c in candidates:

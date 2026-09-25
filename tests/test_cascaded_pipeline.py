@@ -116,6 +116,33 @@ def test_adaptive_gbdt_cutoff_dataframe_support():
     assert filter_candidates_dataframe(empty_df).empty
 
 
+def test_filter_candidates_for_cross_encoder_accepts_dataframe_directly():
+    """Verify calling filter_candidates_for_cross_encoder with a DataFrame works seamlessly."""
+    df = pd.DataFrame({
+        "s1_id": ["S1_A", "S1_A", "S1_B"],
+        "cand_id": ["C1", "C2", "C3"],
+        "p_gbdt": [0.85, 0.05, 0.60],
+    })
+    # Should not raise "ValueError: The truth value of a DataFrame is ambiguous"
+    res = filter_candidates_for_cross_encoder(df, cutoff=0.12, max_keep=8)
+    assert isinstance(res, pd.DataFrame)
+    assert len(res) == 2
+    assert set(res["cand_id"]) == {"C1", "C3"}
+
+    # Custom column names
+    df_custom = pd.DataFrame({
+        "source1_id": ["S1_X", "S1_X"],
+        "cand_id": ["C_X1", "C_X2"],
+        "score": [0.90, 0.10],
+    })
+    res_custom = filter_candidates_for_cross_encoder(
+        df_custom, cutoff=0.12, max_keep=1, prob_key="score", s1_key="source1_id"
+    )
+    assert isinstance(res_custom, pd.DataFrame)
+    assert len(res_custom) == 1
+    assert list(res_custom["cand_id"]) == ["C_X1"]
+
+
 # =========================================================================
 # 2. Meta-Probability Blending (Scalar and Vectorized)
 # =========================================================================
