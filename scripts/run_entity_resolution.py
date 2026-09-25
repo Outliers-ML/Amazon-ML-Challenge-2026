@@ -252,143 +252,143 @@ def main():
         print("Stage 1: Training & Threshold Calibration")
         print("=" * 60)
 
-    tr_s1_path = train_dir / "train_source1.tsv"
-    tr_s2_path = train_dir / "train_source2.tsv"
-    tr_s3_path = train_dir / "train_source3.tsv"
-    tr_gt_path = train_dir / "train_ground_truth.tsv"
+        tr_s1_path = train_dir / "train_source1.tsv"
+        tr_s2_path = train_dir / "train_source2.tsv"
+        tr_s3_path = train_dir / "train_source3.tsv"
+        tr_gt_path = train_dir / "train_ground_truth.tsv"
 
-    if not tr_s1_path.exists() or not tr_gt_path.exists():
-        raise FileNotFoundError(f"Training files missing in {train_dir}")
+        if not tr_s1_path.exists() or not tr_gt_path.exists():
+            raise FileNotFoundError(f"Training files missing in {train_dir}")
 
-    print(f"Loading training data from {train_dir}...")
-    train_s1 = pd.read_csv(tr_s1_path, sep="\t", dtype=str).fillna("")
-    train_s2 = pd.read_csv(tr_s2_path, sep="\t", dtype=str).fillna("") if tr_s2_path.exists() else pd.DataFrame(columns=["entity_id", "business_name", "business_address", "country"])
-    train_s3 = pd.read_csv(tr_s3_path, sep="\t", dtype=str).fillna("") if tr_s3_path.exists() else pd.DataFrame(columns=["entity_id", "business_name", "business_address", "country"])
-    gt_map = load_ground_truth(tr_gt_path)
+        print(f"Loading training data from {train_dir}...")
+        train_s1 = pd.read_csv(tr_s1_path, sep="\t", dtype=str).fillna("")
+        train_s2 = pd.read_csv(tr_s2_path, sep="\t", dtype=str).fillna("") if tr_s2_path.exists() else pd.DataFrame(columns=["entity_id", "business_name", "business_address", "country"])
+        train_s3 = pd.read_csv(tr_s3_path, sep="\t", dtype=str).fillna("") if tr_s3_path.exists() else pd.DataFrame(columns=["entity_id", "business_name", "business_address", "country"])
+        gt_map = load_ground_truth(tr_gt_path)
 
-    # Sample train_s1 if requested
-    if args.sample_train_s1 > 0 and len(train_s1) > args.sample_train_s1:
-        print(f"Sampling {args.sample_train_s1} records from {len(train_s1)} training S1 entities...")
-        if "country" in train_s1.columns:
-            sampled_dfs = []
-            for country, grp in train_s1.groupby(train_s1["country"].fillna("UNKNOWN")):
-                n_c = int(round(args.sample_train_s1 * len(grp) / len(train_s1)))
-                n_c = max(1, min(len(grp), n_c))
-                sampled_dfs.append(grp.sample(n=n_c, random_state=args.seed))
-            train_s1 = pd.concat(sampled_dfs, ignore_index=True)
-            if len(train_s1) > args.sample_train_s1:
+        # Sample train_s1 if requested
+        if args.sample_train_s1 > 0 and len(train_s1) > args.sample_train_s1:
+            print(f"Sampling {args.sample_train_s1} records from {len(train_s1)} training S1 entities...")
+            if "country" in train_s1.columns:
+                sampled_dfs = []
+                for country, grp in train_s1.groupby(train_s1["country"].fillna("UNKNOWN")):
+                    n_c = int(round(args.sample_train_s1 * len(grp) / len(train_s1)))
+                    n_c = max(1, min(len(grp), n_c))
+                    sampled_dfs.append(grp.sample(n=n_c, random_state=args.seed))
+                train_s1 = pd.concat(sampled_dfs, ignore_index=True)
+                if len(train_s1) > args.sample_train_s1:
+                    train_s1 = train_s1.sample(n=args.sample_train_s1, random_state=args.seed).reset_index(drop=True)
+            else:
                 train_s1 = train_s1.sample(n=args.sample_train_s1, random_state=args.seed).reset_index(drop=True)
-        else:
-            train_s1 = train_s1.sample(n=args.sample_train_s1, random_state=args.seed).reset_index(drop=True)
 
-    print(f"Effective training S1 entities: {len(train_s1)}")
+        print(f"Effective training S1 entities: {len(train_s1)}")
 
-    # Blocking per country partition on training set
-    train_cands: Dict[str, List[str]] = {}
-    train_countries = train_s1["country"].fillna("UNKNOWN").unique()
-    for country in train_countries:
-        s1_p = train_s1[train_s1["country"].fillna("UNKNOWN") == country]
-        s2_p = train_s2[train_s2["country"].fillna("UNKNOWN") == country]
-        s3_p = train_s3[train_s3["country"].fillna("UNKNOWN") == country]
-        cands_p = blocker.block_country_partition(s1_p, s2_p, s3_p)
-        train_cands.update(cands_p)
+        # Blocking per country partition on training set
+        train_cands: Dict[str, List[str]] = {}
+        train_countries = train_s1["country"].fillna("UNKNOWN").unique()
+        for country in train_countries:
+            s1_p = train_s1[train_s1["country"].fillna("UNKNOWN") == country]
+            s2_p = train_s2[train_s2["country"].fillna("UNKNOWN") == country]
+            s3_p = train_s3[train_s3["country"].fillna("UNKNOWN") == country]
+            cands_p = blocker.block_country_partition(s1_p, s2_p, s3_p)
+            train_cands.update(cands_p)
 
-    # Fast row lookup dictionaries
-    s1_dict = {row["entity_id"]: row for row in train_s1.to_dict(orient="records")}
-    target_dict = {row["entity_id"]: row for row in train_s2.to_dict(orient="records")}
-    target_dict.update({row["entity_id"]: row for row in train_s3.to_dict(orient="records")})
+        # Fast row lookup dictionaries
+        s1_dict = {row["entity_id"]: row for row in train_s1.to_dict(orient="records")}
+        target_dict = {row["entity_id"]: row for row in train_s2.to_dict(orient="records")}
+        target_dict.update({row["entity_id"]: row for row in train_s3.to_dict(orient="records")})
 
-    # Assemble training pairs (s1, target)
-    pair_s1_rows = []
-    pair_target_rows = []
-    pair_s1_ids = []
-    pair_cand_ids = []
-    pair_ranks = []
-    pair_scores = []
-    pair_is_blocker = []
-    y_list = []
+        # Assemble training pairs (s1, target)
+        pair_s1_rows = []
+        pair_target_rows = []
+        pair_s1_ids = []
+        pair_cand_ids = []
+        pair_ranks = []
+        pair_scores = []
+        pair_is_blocker = []
+        y_list = []
 
-    for s1_id in train_s1["entity_id"]:
-        s1_row = s1_dict.get(s1_id)
-        if not s1_row:
-            continue
-        cands = train_cands.get(s1_id, [])
-        true_matches = gt_map.get(s1_id, set())
+        for s1_id in train_s1["entity_id"]:
+            s1_row = s1_dict.get(s1_id)
+            if not s1_row:
+                continue
+            cands = train_cands.get(s1_id, [])
+            true_matches = gt_map.get(s1_id, set())
 
-        for rank_idx, cand_id in enumerate(cands, start=1):
-            t_row = target_dict.get(cand_id, {"entity_id": cand_id, "business_name": "", "business_address": ""})
-            pair_s1_rows.append(s1_row)
-            pair_target_rows.append(t_row)
-            pair_s1_ids.append(s1_id)
-            pair_cand_ids.append(cand_id)
-            pair_ranks.append(rank_idx)
-            pair_scores.append(1.0 / rank_idx)
-            pair_is_blocker.append(True)
-            y_list.append(1 if cand_id in true_matches else 0)
-
-        # Ensure missed ground truth matches are also included as positive training pairs
-        seen_cands = set(cands)
-        for tm in true_matches:
-            if tm not in seen_cands and tm in target_dict:
-                t_row = target_dict[tm]
+            for rank_idx, cand_id in enumerate(cands, start=1):
+                t_row = target_dict.get(cand_id, {"entity_id": cand_id, "business_name": "", "business_address": ""})
                 pair_s1_rows.append(s1_row)
                 pair_target_rows.append(t_row)
                 pair_s1_ids.append(s1_id)
-                pair_cand_ids.append(tm)
-                pair_ranks.append(len(cands) + 1)
-                pair_scores.append(0.0)
-                pair_is_blocker.append(False)
-                y_list.append(1)
+                pair_cand_ids.append(cand_id)
+                pair_ranks.append(rank_idx)
+                pair_scores.append(1.0 / rank_idx)
+                pair_is_blocker.append(True)
+                y_list.append(1 if cand_id in true_matches else 0)
 
-    print(f"Total candidate pairs assembled: {len(pair_s1_rows)} (positives: {sum(y_list)})")
+            # Ensure missed ground truth matches are also included as positive training pairs
+            seen_cands = set(cands)
+            for tm in true_matches:
+                if tm not in seen_cands and tm in target_dict:
+                    t_row = target_dict[tm]
+                    pair_s1_rows.append(s1_row)
+                    pair_target_rows.append(t_row)
+                    pair_s1_ids.append(s1_id)
+                    pair_cand_ids.append(tm)
+                    pair_ranks.append(len(cands) + 1)
+                    pair_scores.append(0.0)
+                    pair_is_blocker.append(False)
+                    y_list.append(1)
 
-    # Feature extraction & Model training
-    if len(pair_s1_rows) > 0 and len(np.unique(y_list)) > 1:
-        X_train = extractor.extract_pairs_matrix(
-            pair_s1_rows, pair_target_rows, ranks=pair_ranks, scores=pair_scores
-        )
-        y_train = np.array(y_list, dtype=np.int32)
-        s1_groups = pair_s1_ids
+        print(f"Total candidate pairs assembled: {len(pair_s1_rows)} (positives: {sum(y_list)})")
 
-        n_groups = len(set(s1_groups))
-        n_splits = min(args.n_splits, max(2, n_groups))
-        if args.ensemble:
-            print(f"Training Multi-Model Ensemble (LightGBM + CatBoost + XGBoost) across {n_splits} folds...")
-            trainer = EREnsembleTrainer(n_splits=n_splits, seed=args.seed)
+        # Feature extraction & Model training
+        if len(pair_s1_rows) > 0 and len(np.unique(y_list)) > 1:
+            X_train = extractor.extract_pairs_matrix(
+                pair_s1_rows, pair_target_rows, ranks=pair_ranks, scores=pair_scores
+            )
+            y_train = np.array(y_list, dtype=np.int32)
+            s1_groups = pair_s1_ids
+
+            n_groups = len(set(s1_groups))
+            n_splits = min(args.n_splits, max(2, n_groups))
+            if args.ensemble:
+                print(f"Training Multi-Model Ensemble (LightGBM + CatBoost + XGBoost) across {n_splits} folds...")
+                trainer = EREnsembleTrainer(n_splits=n_splits, seed=args.seed)
+            else:
+                print(f"Training LightGBM model across {n_splits} folds...")
+                trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed)
+            model = trainer.train(X_train, y_train, s1_groups)
+
+            probs_val, val_idx = trainer.predict_val_proba(X_train)
+
+            # Filter validation pairs to only those generated by the blocker to prevent distribution shift
+            val_blocker_mask = np.array([pair_is_blocker[i] for i in val_idx], dtype=bool)
+            val_idx_blocker = val_idx[val_blocker_mask]
+            probs_val_blocker = probs_val[val_blocker_mask]
+
+            val_s1 = [s1_groups[i] for i in val_idx_blocker]
+            val_cands = [pair_cand_ids[i] for i in val_idx_blocker]
+
+            # Genuine validation entities: all S1 entities in the validation fold
+            val_entities = set(s1_groups[i] for i in val_idx)
+            val_gt_map = {s1: gt_map.get(s1, set()) for s1 in val_entities}
+
+            best_tau, best_score, tau_curve, score_curve = optimize_f05_threshold(
+                val_s1, val_cands, probs_val_blocker, val_gt_map, return_curve=True
+            )
+            print(f"[+] Optimal threshold tau* = {best_tau:.4f} with validation Macro F_0.5 = {best_score:.4f}")
+
+            if tracker:
+                tracker.log_threshold_curve(tau_curve, score_curve)
+                if hasattr(model, "feature_importances_") and len(model.feature_importances_) > 0:
+                    fi = dict(zip(extractor.FEATURE_NAMES, [float(x) for x in model.feature_importances_]))
+                    tracker.log_feature_importances(fi)
         else:
-            print(f"Training LightGBM model across {n_splits} folds...")
-            trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed)
-        model = trainer.train(X_train, y_train, s1_groups)
-
-        probs_val, val_idx = trainer.predict_val_proba(X_train)
-
-        # Filter validation pairs to only those generated by the blocker to prevent distribution shift
-        val_blocker_mask = np.array([pair_is_blocker[i] for i in val_idx], dtype=bool)
-        val_idx_blocker = val_idx[val_blocker_mask]
-        probs_val_blocker = probs_val[val_blocker_mask]
-
-        val_s1 = [s1_groups[i] for i in val_idx_blocker]
-        val_cands = [pair_cand_ids[i] for i in val_idx_blocker]
-
-        # Genuine validation entities: all S1 entities in the validation fold
-        val_entities = set(s1_groups[i] for i in val_idx)
-        val_gt_map = {s1: gt_map.get(s1, set()) for s1 in val_entities}
-
-        best_tau, best_score, tau_curve, score_curve = optimize_f05_threshold(
-            val_s1, val_cands, probs_val_blocker, val_gt_map, return_curve=True
-        )
-        print(f"[+] Optimal threshold tau* = {best_tau:.4f} with validation Macro F_0.5 = {best_score:.4f}")
-
-        if tracker:
-            tracker.log_threshold_curve(tau_curve, score_curve)
-            if hasattr(model, "feature_importances_") and len(model.feature_importances_) > 0:
-                fi = dict(zip(extractor.FEATURE_NAMES, [float(x) for x in model.feature_importances_]))
-                tracker.log_feature_importances(fi)
-    else:
-        print("[!] Warning: Insufficient class diversity in training pairs. Using fallback threshold tau = 0.50")
-        best_tau = 0.50
-        best_score = 0.0
-        model = None
+            print("[!] Warning: Insufficient class diversity in training pairs. Using fallback threshold tau = 0.50")
+            best_tau = 0.50
+            best_score = 0.0
+            model = None
 
         if args.save_model:
             save_p = Path(args.save_model)

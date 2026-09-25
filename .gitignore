@@ -102,3 +102,5 @@ runs/
 student_resource/dataset/
 output/
 catboost_info/
+run_ensemble.log
+scripts/run_bg.sh

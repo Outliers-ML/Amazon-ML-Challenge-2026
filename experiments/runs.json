@@ -321,5 +321,44 @@
       }
     },
     "duration_seconds": 0.47
+  },
+  {
+    "run_id": "run-20260925-092650-6cc6bf",
+    "run_name": "Ensemble-LGBM-CatBoost-XGBoost-27Feat",
+    "timestamp": "2026-09-25T09:26:50.329168+00:00",
+    "params": {
+      "model_type": "Ensemble(LightGBM+CatBoost+XGBoost)",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": true
+    },
+    "metrics": {
+      "macro_f05": 0.2701893295807487,
+      "best_tau": 0.5,
+      "train_pairs": 1387347,
+      "train_positives": 345973,
+      "total_test_s1": 1732544,
+      "total_test_matched": 356464,
+      "total_test_singletons": 712974
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "France": {
+        "total": 259452,
+        "matched": 107423,
+        "singletons": 152029
+      },
+      "India": {
+        "total": 809986,
+        "matched": 249041,
+        "singletons": 560945
+      }
+    },
+    "duration_seconds": 1382.72
   }
 ]
