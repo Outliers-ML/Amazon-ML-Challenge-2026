@@ -1,13 +1,15 @@
 """Vectorized Rapid Pairwise Feature Extraction for Business Entity Resolution.
 
 Extracts discriminative string similarity and address compatibility metrics using
-C-accelerated RapidFuzz and structured token comparison.
+C-accelerated RapidFuzz, structured token comparison, and dense semantic representations.
 """
 
+import math
 import re
 from typing import Any, Dict, List, Optional
 import numpy as np
 import rapidfuzz.distance.JaroWinkler as JaroWinkler
+import rapidfuzz.distance.LCSseq as LCSseq
 import rapidfuzz.distance.Levenshtein as Levenshtein
 import rapidfuzz.fuzz as fuzz
 
@@ -43,11 +45,66 @@ class PairwiseFeatureExtractor:
         "is_source3",
         "blocking_rank",
         "blocking_score",
+        "name_lcs_ratio",
+        "addr_lcs_ratio",
+        "name_char_3gram_dice",
+        "dense_cosine_similarity",
+        "dense_norm_difference",
     ]
 
     def __init__(self) -> None:
         self.normalizer = TextNormalizer()
         self.feature_names = list(self.FEATURE_NAMES)
+
+    @staticmethod
+    def compute_numeric_ternary(s1_num: Optional[Any], cand_num: Optional[Any]) -> float:
+        """Ternary Numeral Conflict Feature.
+
+        Returns:
+            +1.0 if both are non-empty, non-null, and equal (s1_num == cand_num).
+             0.0 if either is None, empty, or NaN.
+            -1.0 if both are non-empty, non-null, and s1_num != cand_num (explicit conflict).
+        """
+        if s1_num is None or cand_num is None:
+            return 0.0
+        if isinstance(s1_num, float) and math.isnan(s1_num):
+            return 0.0
+        if isinstance(cand_num, float) and math.isnan(cand_num):
+            return 0.0
+        s1_str = str(s1_num).strip().lower()
+        cand_str = str(cand_num).strip().lower()
+        if not s1_str or not cand_str:
+            return 0.0
+        if s1_str in {"nan", "none", "null", "<na>", "n/a"} or cand_str in {"nan", "none", "null", "<na>", "n/a"}:
+            return 0.0
+        return 1.0 if s1_str == cand_str else -1.0
+
+    @staticmethod
+    def compute_lcs_ratio(s1: str, s2: str) -> float:
+        """Compute Longest Common Subsequence (LCS) ratio between two strings.
+
+        Formula: 2 * len(LCS) / (len(s1) + len(s2))
+        """
+        if not s1 or not s2:
+            return 0.0
+        total_len = len(s1) + len(s2)
+        if total_len == 0:
+            return 0.0
+        lcs_len = LCSseq.similarity(s1, s2)
+        return float(2.0 * lcs_len / total_len)
+
+    @staticmethod
+    def compute_char_3gram_dice(grams1: set, grams2: set) -> float:
+        """Compute Sørensen-Dice similarity on character 3-gram sets.
+
+        Formula: 2 * len(set1 ∩ set2) / (len(set1) + len(set2))
+        """
+        if not grams1 or not grams2:
+            return 0.0
+        total_len = len(grams1) + len(grams2)
+        if total_len == 0:
+            return 0.0
+        return float(2.0 * len(grams1 & grams2) / total_len)
 
     def _get_normalized_name(self, row: Dict) -> NormalizedName:
         if "_norm_name" in row and isinstance(row["_norm_name"], NormalizedName):
@@ -69,6 +126,8 @@ class PairwiseFeatureExtractor:
         target_source: str,
         rank: int,
         blocking_score: float,
+        dense_sim: float = 0.0,
+        dense_norm_diff: float = 0.0,
     ) -> np.ndarray:
         # 1. Name Metrics
         raw1, raw2 = s1_n.raw.lower(), t_n.raw.lower()
@@ -81,14 +140,17 @@ class PairwiseFeatureExtractor:
         tok_sort = float(fuzz.token_sort_ratio(cln1, cln2)) / 100.0 if cln1 and cln2 else 0.0
         tok_set = float(fuzz.token_set_ratio(cln1, cln2)) / 100.0 if cln1 and cln2 else 0.0
 
-        # Char 3-gram Jaccard
+        # Char 3-gram Jaccard and Sørensen-Dice
         grams1 = set(s1_n.char_3grams)
         grams2 = set(t_n.char_3grams)
         if grams1 and grams2:
             gram_union = len(grams1 | grams2)
             char_3gram_jaccard = float(len(grams1 & grams2) / gram_union) if gram_union > 0 else 0.0
+            gram_sum = len(grams1) + len(grams2)
+            name_char_3gram_dice = float(2.0 * len(grams1 & grams2) / gram_sum) if gram_sum > 0 else 0.0
         else:
             char_3gram_jaccard = 0.0
+            name_char_3gram_dice = 0.0
 
         len1, len2 = len(cln1), len(cln2)
         name_len_diff = float(abs(len1 - len2))
@@ -112,6 +174,9 @@ class PairwiseFeatureExtractor:
         toks_t1 = set(t_n.tokens)
         name_common_tokens_count = float(len(toks_s1 & toks_t1))
 
+        # Longest Common Subsequence (LCS) ratio for names
+        name_lcs = self.compute_lcs_ratio(cln1, cln2)
+
         # 2. Address Metrics
         a1, a2 = s1_a.clean_address, t_a.clean_address
         raw_a1, raw_a2 = s1_a.raw.lower(), t_a.raw.lower()
@@ -129,17 +194,11 @@ class PairwiseFeatureExtractor:
         addr_tok_sort = float(fuzz.token_sort_ratio(a1, a2)) / 100.0 if a1 and a2 else 0.0
         addr_tok_set = float(fuzz.token_set_ratio(a1, a2)) / 100.0 if a1 and a2 else 0.0
 
-        # Street number comparison (+1 = match, -1 = conflict, 0 = unknown)
-        if s1_a.street_number and t_a.street_number:
-            street_status = 1.0 if s1_a.street_number == t_a.street_number else -1.0
-        else:
-            street_status = 0.0
+        # Street number comparison (+1 = match, -1 = conflict, 0 = unknown/absent)
+        street_status = self.compute_numeric_ternary(s1_a.street_number, t_a.street_number)
 
-        # Postal code comparison (+1 = match, -1 = conflict, 0 = unknown)
-        if s1_a.postal_code and t_a.postal_code:
-            postal_status = 1.0 if s1_a.postal_code == t_a.postal_code else -1.0
-        else:
-            postal_status = 0.0
+        # Postal code comparison (+1 = match, -1 = conflict, 0 = unknown/absent)
+        postal_status = self.compute_numeric_ternary(s1_a.postal_code, t_a.postal_code)
 
         # Locality & Numeric Overlap
         locality1 = {t for t in s1_a.tokens if not t.isdigit() and len(t) >= 3}
@@ -157,6 +216,9 @@ class PairwiseFeatureExtractor:
             addr_numeric_overlap = 0.0
 
         addr_empty = 1.0 if not a1 or not a2 else 0.0
+
+        # Longest Common Subsequence (LCS) ratio for addresses
+        addr_lcs = self.compute_lcs_ratio(a1, a2)
 
         # 3. Cross & Relational
         cross_match = 0.0
@@ -204,6 +266,11 @@ class PairwiseFeatureExtractor:
             is_s3,
             float(rank),
             float(blocking_score),
+            name_lcs,
+            addr_lcs,
+            name_char_3gram_dice,
+            float(dense_sim),
+            float(dense_norm_diff),
         ], dtype=np.float32)
 
     def extract_pair_features(
@@ -212,6 +279,8 @@ class PairwiseFeatureExtractor:
         target_row: Dict,
         rank: int = 1,
         blocking_score: float = 0.0,
+        dense_sim: Optional[float] = None,
+        dense_norm_diff: Optional[float] = None,
     ) -> np.ndarray:
         s1_n = self._get_normalized_name(s1_row)
         s1_a = self._get_normalized_address(s1_row)
@@ -221,8 +290,60 @@ class PairwiseFeatureExtractor:
         target_id = str(target_row.get("entity_id") or "")
         target_src = str(target_row.get("source") or "")
 
+        if dense_sim is None:
+            raw_sim = target_row.get("dense_sim", target_row.get("dense_cosine_similarity", 0.0))
+            dense_sim = float(raw_sim) if raw_sim is not None else 0.0
+        else:
+            dense_sim = float(dense_sim)
+
+        if dense_norm_diff is None:
+            raw_diff = target_row.get("dense_norm_diff", target_row.get("dense_norm_difference", 0.0))
+            dense_norm_diff = float(raw_diff) if raw_diff is not None else 0.0
+        else:
+            dense_norm_diff = float(dense_norm_diff)
+
         return self._compute_features(
-            s1_n, s1_a, t_n, t_a, target_id, target_src, rank, blocking_score
+            s1_n, s1_a, t_n, t_a, target_id, target_src, rank, blocking_score, dense_sim, dense_norm_diff
+        )
+
+    def extract_features(
+        self,
+        s1_name: str = "",
+        s1_addr: str = "",
+        cand_name: str = "",
+        cand_addr: str = "",
+        s1_country: str = "",
+        cand_country: str = "",
+        cand_source: str = "",
+        cand_id: str = "",
+        rank: int = 1,
+        blocking_score: float = 0.0,
+        dense_sim: float = 0.0,
+        dense_norm_diff: float = 0.0,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        """Extract 32-dimensional feature vector for a candidate pair from raw strings/metadata."""
+        s1_row = {
+            "business_name": s1_name,
+            "business_address": s1_addr,
+            "country": s1_country,
+        }
+        cand_row = {
+            "entity_id": cand_id,
+            "business_name": cand_name,
+            "business_address": cand_addr,
+            "country": cand_country,
+            "source": cand_source,
+            "dense_sim": dense_sim,
+            "dense_norm_diff": dense_norm_diff,
+        }
+        return self.extract_pair_features(
+            s1_row,
+            cand_row,
+            rank=rank,
+            blocking_score=blocking_score,
+            dense_sim=dense_sim,
+            dense_norm_diff=dense_norm_diff,
         )
 
     def extract_pairs_matrix(
@@ -231,6 +352,8 @@ class PairwiseFeatureExtractor:
         target_rows: List[Dict],
         ranks: Optional[List[int]] = None,
         scores: Optional[List[float]] = None,
+        dense_sims: Optional[List[float]] = None,
+        dense_norm_diffs: Optional[List[float]] = None,
     ) -> np.ndarray:
         n = len(s1_rows)
         if len(target_rows) != n:
@@ -244,6 +367,14 @@ class PairwiseFeatureExtractor:
         if scores is not None and len(scores) != n:
             raise ValueError(
                 f"scores length ({len(scores)}) must match s1_rows length ({n})"
+            )
+        if dense_sims is not None and len(dense_sims) != n:
+            raise ValueError(
+                f"dense_sims length ({len(dense_sims)}) must match s1_rows length ({n})"
+            )
+        if dense_norm_diffs is not None and len(dense_norm_diffs) != n:
+            raise ValueError(
+                f"dense_norm_diffs length ({len(dense_norm_diffs)}) must match s1_rows length ({n})"
             )
 
         if n == 0:
@@ -284,8 +415,24 @@ class PairwiseFeatureExtractor:
             target_id = str(t.get("entity_id") or "")
             target_src = str(t.get("source") or "")
 
+            if dense_sims is not None:
+                d_sim = float(dense_sims[i])
+            else:
+                raw_sim = t.get("dense_sim", t.get("dense_cosine_similarity", 0.0))
+                d_sim = float(raw_sim) if raw_sim is not None else 0.0
+
+            if dense_norm_diffs is not None:
+                d_norm = float(dense_norm_diffs[i])
+            else:
+                raw_diff = t.get("dense_norm_diff", t.get("dense_norm_difference", 0.0))
+                d_norm = float(raw_diff) if raw_diff is not None else 0.0
+
             matrix[i] = self._compute_features(
-                s1_n, s1_a, t_n, t_a, target_id, target_src, r, s
+                s1_n, s1_a, t_n, t_a, target_id, target_src, r, s, d_sim, d_norm
             )
 
         return matrix
+
+
+# Module-level alias for convenience and direct imports
+compute_numeric_ternary = PairwiseFeatureExtractor.compute_numeric_ternary
