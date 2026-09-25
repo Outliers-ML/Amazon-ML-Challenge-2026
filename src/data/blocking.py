@@ -251,25 +251,30 @@ class MultiTierBlocker:
         """Build deterministic bucket indexes and discard clusters exceeding the ceiling."""
         ceiling = bucket_ceiling if bucket_ceiling is not None else self.bucket_ceiling
         prepared = self._prepare_records(records)
-        raw_buckets: Dict[Tuple, List[str]] = defaultdict(list)
+        raw_buckets: Dict[Tuple, set] = defaultdict(set)
 
         for rec in prepared:
             eid = rec["entity_id"]
             keys = self.get_record_bucket_keys(rec)
             for k in keys:
-                if eid not in raw_buckets[k]:
-                    raw_buckets[k].append(eid)
+                raw_buckets[k].add(eid)
 
         # Discard any bucket exceeding ceiling
-        filtered_buckets = {k: v for k, v in raw_buckets.items() if len(v) <= ceiling}
+        filtered_buckets = {
+            k: sorted(members)
+            for k, members in raw_buckets.items()
+            if len(members) <= ceiling
+        }
         return filtered_buckets
 
     def retrieve_tier1_candidates(
         self,
         s1_prepared: List[Dict[str, Any]],
         target_buckets: Dict[Tuple, List[str]],
+        top_k: Optional[int] = None,
     ) -> Dict[str, List[Tuple[str, float]]]:
-        """Retrieve Tier 1 candidates using bucket hash lookup."""
+        """Retrieve Tier 1 candidates using bucket hash lookup with quality weighting."""
+        k_limit = top_k if top_k is not None else self.max_candidates
         tier1_map: Dict[str, List[Tuple[str, float]]] = {}
         for s1_rec in s1_prepared:
             s1_id = s1_rec["entity_id"]
@@ -277,12 +282,15 @@ class MultiTierBlocker:
             keys = self.get_record_bucket_keys(s1_rec)
             for k in keys:
                 if k in target_buckets:
+                    # Exact clean name key has 2 elements: (country, clean_name_stripped)
+                    # Give higher weight (3.0) to exact clean name match over coarse address/postal keys (1.0)
+                    weight = 3.0 if len(k) == 2 else 1.0
                     for target_id in target_buckets[k]:
-                        scores[target_id] += 1.0
+                        scores[target_id] += weight
 
             if scores:
                 sorted_cands = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
-                tier1_map[s1_id] = sorted_cands
+                tier1_map[s1_id] = sorted_cands[:k_limit]
             else:
                 tier1_map[s1_id] = []
         return tier1_map
@@ -292,8 +300,9 @@ class MultiTierBlocker:
         s1_prepared: List[Dict[str, Any]],
         target_prepared: List[Dict[str, Any]],
         top_k: int = 20,
+        chunk_size: int = 2000,
     ) -> Dict[str, List[Tuple[str, float]]]:
-        """Retrieve Tier 2 candidates using character 3-gram TF-IDF similarity."""
+        """Retrieve Tier 2 candidates using character 3-gram TF-IDF similarity with chunking."""
         s1_ids = [r["entity_id"] for r in s1_prepared]
         if not s1_prepared or not target_prepared:
             return {eid: [] for eid in s1_ids}
@@ -309,48 +318,77 @@ class MultiTierBlocker:
             for r in s1_prepared
         ]
 
+        min_df = 2 if len(target_texts) >= 2 else 1
         vectorizer = TfidfVectorizer(
             analyzer="char",
             ngram_range=(3, 3),
             sublinear_tf=True,
+            min_df=min_df,
         )
 
         try:
             target_tfidf = vectorizer.fit_transform(target_texts)
             s1_tfidf = vectorizer.transform(s1_texts)
         except ValueError:
-            return {eid: [] for eid in s1_ids}
-
-        sim_matrix = s1_tfidf.dot(target_tfidf.T)
-
-        tier2_map: Dict[str, List[Tuple[str, float]]] = {}
-        for i, s1_id in enumerate(s1_ids):
-            row = sim_matrix.getrow(i)
-            if row.nnz == 0:
-                tier2_map[s1_id] = []
-                continue
-
-            indices = row.indices
-            data = row.data
-            valid_mask = data > 0
-            valid_indices = indices[valid_mask]
-            valid_data = data[valid_mask]
-
-            if len(valid_data) == 0:
-                tier2_map[s1_id] = []
-                continue
-
-            if len(valid_data) <= top_k:
-                sort_order = np.argsort(-valid_data)
+            if min_df > 1:
+                try:
+                    vectorizer = TfidfVectorizer(
+                        analyzer="char",
+                        ngram_range=(3, 3),
+                        sublinear_tf=True,
+                        min_df=1,
+                    )
+                    target_tfidf = vectorizer.fit_transform(target_texts)
+                    s1_tfidf = vectorizer.transform(s1_texts)
+                except ValueError:
+                    return {eid: [] for eid in s1_ids}
             else:
-                part = np.argpartition(-valid_data, top_k)[:top_k]
-                sort_order = part[np.argsort(-valid_data[part])]
+                return {eid: [] for eid in s1_ids}
 
-            cands = [
-                (target_ids[valid_indices[idx]], float(valid_data[idx]))
-                for idx in sort_order[:top_k]
-            ]
-            tier2_map[s1_id] = cands
+        n_s1 = s1_tfidf.shape[0]
+        target_tfidf_t = target_tfidf.T.tocsc()
+        tier2_map: Dict[str, List[Tuple[str, float]]] = {}
+
+        for chunk_start in range(0, n_s1, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, n_s1)
+            s1_chunk = s1_tfidf[chunk_start:chunk_end]
+            sim_chunk = s1_chunk.dot(target_tfidf_t).tocsr()
+
+            for i in range(chunk_end - chunk_start):
+                s1_id = s1_ids[chunk_start + i]
+                start = sim_chunk.indptr[i]
+                end = sim_chunk.indptr[i + 1]
+
+                if start == end:
+                    tier2_map[s1_id] = []
+                    continue
+
+                row_indices = sim_chunk.indices[start:end]
+                row_data = sim_chunk.data[start:end]
+
+                valid_mask = row_data > 0
+                if not np.any(valid_mask):
+                    tier2_map[s1_id] = []
+                    continue
+
+                valid_indices = row_indices[valid_mask]
+                valid_data = row_data[valid_mask]
+
+                if len(valid_data) <= top_k:
+                    candidates_unsorted = [
+                        (target_ids[valid_indices[idx]], float(valid_data[idx]))
+                        for idx in range(len(valid_data))
+                    ]
+                else:
+                    part = np.argpartition(-valid_data, top_k)[:top_k]
+                    candidates_unsorted = [
+                        (target_ids[valid_indices[idx]], float(valid_data[idx]))
+                        for idx in part
+                    ]
+
+                tier2_map[s1_id] = sorted(
+                    candidates_unsorted, key=lambda x: (-x[1], x[0])
+                )
 
         return tier2_map
 
@@ -361,8 +399,9 @@ class MultiTierBlocker:
         s1_ids: List[str],
         target_ids: List[str],
         top_k: int = 20,
+        chunk_size: int = 2048,
     ) -> Dict[str, List[Tuple[str, float]]]:
-        """Retrieve Tier 3 candidates using dense cosine similarity."""
+        """Retrieve Tier 3 candidates using dense cosine similarity with chunking."""
         if len(s1_ids) == 0 or len(target_ids) == 0:
             return {eid: [] for eid in s1_ids}
 
@@ -379,6 +418,12 @@ class MultiTierBlocker:
             else:
                 target_t = target_embeddings.float()
 
+            # Ensure 2D tensor shapes
+            if s1_t.ndim == 1:
+                s1_t = s1_t.unsqueeze(0)
+            if target_t.ndim == 1:
+                target_t = target_t.unsqueeze(0)
+
             if torch.cuda.is_available() and (s1_t.is_cuda or target_t.is_cuda):
                 device = torch.device("cuda")
                 s1_t = s1_t.to(device)
@@ -386,39 +431,62 @@ class MultiTierBlocker:
 
             s1_norm = torch.nn.functional.normalize(s1_t, p=2, dim=1)
             target_norm = torch.nn.functional.normalize(target_t, p=2, dim=1)
+            target_norm_t = target_norm.T
 
-            sim_matrix = torch.matmul(s1_norm, target_norm.T)
-            top_scores, top_indices = torch.topk(sim_matrix, k=k, dim=1)
-
-            top_scores_np = top_scores.cpu().numpy()
-            top_indices_np = top_indices.cpu().numpy()
-
+            n_s1 = s1_norm.shape[0]
             dense_map: Dict[str, List[Tuple[str, float]]] = {}
-            for i, s1_id in enumerate(s1_ids):
-                dense_map[s1_id] = [
-                    (target_ids[top_indices_np[i, j]], float(top_scores_np[i, j]))
-                    for j in range(k)
-                ]
+
+            for chunk_start in range(0, n_s1, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, n_s1)
+                s1_chunk = s1_norm[chunk_start:chunk_end]
+
+                sim_chunk = torch.matmul(s1_chunk, target_norm_t)
+                top_scores, top_indices = torch.topk(sim_chunk, k=k, dim=1)
+
+                top_scores_np = top_scores.cpu().numpy()
+                top_indices_np = top_indices.cpu().numpy()
+
+                for i in range(chunk_end - chunk_start):
+                    s1_id = s1_ids[chunk_start + i]
+                    dense_map[s1_id] = [
+                        (target_ids[top_indices_np[i, j]], float(top_scores_np[i, j]))
+                        for j in range(k)
+                    ]
             return dense_map
         else:
             s1_arr = np.asarray(s1_embeddings, dtype=np.float32)
             target_arr = np.asarray(target_embeddings, dtype=np.float32)
+
+            # Ensure 2D array shapes
+            if s1_arr.ndim == 1:
+                s1_arr = np.expand_dims(s1_arr, axis=0)
+            if target_arr.ndim == 1:
+                target_arr = np.expand_dims(target_arr, axis=0)
+
             s1_norm = s1_arr / np.maximum(np.linalg.norm(s1_arr, axis=1, keepdims=True), 1e-12)
             target_norm = target_arr / np.maximum(np.linalg.norm(target_arr, axis=1, keepdims=True), 1e-12)
-            sim_matrix = np.dot(s1_norm, target_norm.T)
+            target_norm_t = target_norm.T
 
+            n_s1 = s1_norm.shape[0]
             dense_map = {}
-            for i, s1_id in enumerate(s1_ids):
-                row = sim_matrix[i]
-                if len(row) <= k:
-                    sort_order = np.argsort(-row)
-                else:
-                    part = np.argpartition(-row, k)[:k]
-                    sort_order = part[np.argsort(-row[part])]
-                dense_map[s1_id] = [
-                    (target_ids[idx], float(row[idx]))
-                    for idx in sort_order[:k]
-                ]
+
+            for chunk_start in range(0, n_s1, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, n_s1)
+                s1_chunk = s1_norm[chunk_start:chunk_end]
+                sim_chunk = np.dot(s1_chunk, target_norm_t)
+
+                for i in range(chunk_end - chunk_start):
+                    s1_id = s1_ids[chunk_start + i]
+                    row = sim_chunk[i]
+                    if len(row) <= k:
+                        sort_order = np.argsort(-row)
+                    else:
+                        part = np.argpartition(-row, k)[:k]
+                        sort_order = part[np.argsort(-row[part])]
+                    dense_map[s1_id] = [
+                        (target_ids[idx], float(row[idx]))
+                        for idx in sort_order[:k]
+                    ]
             return dense_map
 
     def generate_candidate_pairs(
@@ -441,9 +509,9 @@ class MultiTierBlocker:
         if not target_prepared:
             return {r["entity_id"]: [] for r in s1_prepared}
 
-        # Tier 1: Deterministic & Phonetic Bucketing with Bucket Ceiling
+        # Tier 1: Deterministic & Phonetic Bucketing with Bucket Ceiling and Top-K Capping
         target_buckets = self.build_deterministic_buckets(target_prepared)
-        t1_candidates = self.retrieve_tier1_candidates(s1_prepared, target_buckets)
+        t1_candidates = self.retrieve_tier1_candidates(s1_prepared, target_buckets, top_k=limit_candidates)
 
         # Tier 2: Sparse BM25 / Char 3-Grams (top-20)
         t2_candidates = self.retrieve_tier2_candidates(s1_prepared, target_prepared, top_k=20)

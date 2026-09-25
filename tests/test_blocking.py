@@ -402,3 +402,119 @@ def test_tier3_dense_vector_retrieval():
     assert res_torch["S1-1"][0][0] == "T-1"
     assert res_torch["S1-2"][0][0] == "T-2"
 
+
+def test_tier1_name_weighting_and_capping():
+    from src.data.blocking import MultiTierBlocker
+
+    blocker = MultiTierBlocker(max_candidates=2)
+    s1_prepared = [
+        {
+            "entity_id": "S1-1",
+            "country": "US",
+            "clean_name_stripped": "acme supply",
+            "clean_address": "100 main st 10001",
+            "street_num": "100",
+            "postal_code": "10001",
+            "metaphone_primary": "AKM",
+        }
+    ]
+    # T1 matches only address keys: (US, 10001, 100) -> score 1.0
+    # T2 matches exact name: (US, acme supply) -> score 3.0
+    # T3 matches address keys: score 1.0
+    target_buckets = {
+        ("US", "acme supply"): ["T-NAME"],
+        ("US", "10001", "100"): ["T-ADDR1", "T-ADDR2", "T-ADDR3"],
+    }
+    cands = blocker.retrieve_tier1_candidates(s1_prepared, target_buckets, top_k=2)
+    # T-NAME should be first because score is 3.0 vs 1.0
+    assert cands["S1-1"][0][0] == "T-NAME"
+    assert cands["S1-1"][0][1] == 3.0
+    # Top-K capping should restrict to 2 candidates
+    assert len(cands["S1-1"]) == 2
+
+
+def test_tier2_chunked_sparse_matrix_processing():
+    from src.data.blocking import MultiTierBlocker
+
+    blocker = MultiTierBlocker()
+    s1_prepared = [
+        {
+            "entity_id": f"S1-{i}",
+            "country": "US",
+            "clean_name_stripped": f"business name {i}",
+            "clean_address": f"{100 + i} main street",
+            "street_num": f"{100 + i}",
+            "postal_code": "10001",
+            "metaphone_primary": "BSN",
+        }
+        for i in range(5)
+    ]
+    target_prepared = [
+        {
+            "entity_id": f"T-{i}",
+            "country": "US",
+            "clean_name_stripped": f"business name {i}",
+            "clean_address": f"{100 + i} main street",
+            "street_num": f"{100 + i}",
+            "postal_code": "10001",
+            "metaphone_primary": "BSN",
+        }
+        for i in range(5)
+    ] + [
+        {
+            "entity_id": f"T-{i}-alt",
+            "country": "US",
+            "clean_name_stripped": f"business name {i}",
+            "clean_address": f"{100 + i} main street",
+            "street_num": f"{100 + i}",
+            "postal_code": "10001",
+            "metaphone_primary": "BSN",
+        }
+        for i in range(5)
+    ]
+    # Test with tiny chunk_size=2 to force multi-chunk processing
+    res = blocker.retrieve_tier2_candidates(
+        s1_prepared, target_prepared, top_k=3, chunk_size=2
+    )
+    assert len(res) == 5
+    for i in range(5):
+        top_cand = res[f"S1-{i}"][0][0]
+        assert top_cand in (f"T-{i}", f"T-{i}-alt")
+
+
+def test_tier3_1d_tensor_and_chunked_retrieval():
+    import numpy as np
+    import torch
+    from src.data.blocking import MultiTierBlocker
+
+    blocker = MultiTierBlocker()
+    # 1D tensor inputs
+    s1_1d = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+    target_1d = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+
+    res = blocker.retrieve_dense_candidates(
+        s1_embeddings=s1_1d,
+        target_embeddings=target_1d,
+        s1_ids=["S1-SINGLE"],
+        target_ids=["T-SINGLE"],
+        top_k=1,
+        chunk_size=1,
+    )
+    assert res["S1-SINGLE"][0][0] == "T-SINGLE"
+    assert round(res["S1-SINGLE"][0][1], 2) == 1.0
+
+    # 1D NumPy inputs
+    s1_np_1d = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    target_np_1d = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    res_np = blocker.retrieve_dense_candidates(
+        s1_embeddings=s1_np_1d,
+        target_embeddings=target_np_1d,
+        s1_ids=["S1-NP"],
+        target_ids=["T-NP"],
+        top_k=1,
+        chunk_size=1,
+    )
+    assert res_np["S1-NP"][0][0] == "T-NP"
+    assert round(res_np["S1-NP"][0][1], 2) == 1.0
+
+
