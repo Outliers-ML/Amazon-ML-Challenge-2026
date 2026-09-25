@@ -384,7 +384,7 @@ def main():
         s3_part = test_s3[test_s3["country"].fillna("UNKNOWN") == country]
 
         print(f"\nProcessing partition [{p_idx + 1}/{len(unique_test_countries)}] — Country: '{country}' "
-              f"(S1: {len(s1_part)}, S2: {len(s2_part)}, S3: {len(s3_part)})...")
+              f"(S1: {len(s1_part)}, S2: {len(s2_part)}, S3: {len(s3_part)})...", flush=True)
 
         # 1. Blocking
         part_cands = blocker.block_country_partition(s1_part, s2_part, s3_part)
@@ -473,7 +473,7 @@ def main():
             "singletons": len(part_matches) - n_non_empty,
         }
         print(f"  Partition '{country}' completed: {len(part_matches)} S1 rows written "
-              f"({n_non_empty} matched, {len(part_matches) - n_non_empty} singletons).")
+              f"({n_non_empty} matched, {len(part_matches) - n_non_empty} singletons).", flush=True)
 
     print("\n[+] Dynamic test set inference completed.")
     print(f"  matching_results: {matching_file}")
