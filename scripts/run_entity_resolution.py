@@ -32,7 +32,7 @@ import pandas as pd
 
 from src.data.blocking import MultiKeyBlocker
 from src.features.pairwise_features import PairwiseFeatureExtractor
-from src.pipeline.er_trainer import ERModelTrainer, optimize_f05_threshold
+from src.pipeline.er_trainer import EREnsembleTrainer, ERModelTrainer, optimize_f05_threshold
 from src.utils.experiment_tracker import ExperimentTracker
 
 
@@ -148,6 +148,11 @@ def main():
         help="Experiment run name for tracking and dashboard (default: Baseline-LGBM)",
     )
     parser.add_argument(
+        "--ensemble",
+        action="store_true",
+        help="Use multi-model ensemble (LightGBM + CatBoost + XGBoost) instead of single LightGBM",
+    )
+    parser.add_argument(
         "--no-track",
         action="store_true",
         help="Disable logging experiment to tracker/dashboard ledger",
@@ -155,21 +160,28 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine experiment name
+    exp_name = args.experiment_name
+    if args.ensemble and exp_name == "Baseline-LGBM":
+        exp_name = "Ensemble-LGBM-CatBoost-XGBoost-27Feat"
+
     # Initialize experiment tracker
     tracker = None
     if not args.no_track:
         ledger_path = PROJECT_ROOT / "experiments" / "runs.json"
         tracker = ExperimentTracker(ledger_path=ledger_path, use_mlflow=False)
+        model_type_str = "Ensemble(LightGBM+CatBoost+XGBoost)" if args.ensemble else "LightGBM"
         tracker.start_run(
-            run_name=args.experiment_name,
+            run_name=exp_name,
             params={
-                "model_type": "LightGBM",
+                "model_type": model_type_str,
                 "sample_train_s1": args.sample_train_s1,
                 "max_candidates": args.max_candidates,
                 "max_postings": args.max_postings,
                 "n_splits": args.n_splits,
                 "seed": args.seed,
                 "infer_chunk_size": args.infer_chunk_size,
+                "ensemble": args.ensemble,
             },
         )
 
@@ -297,7 +309,12 @@ def main():
 
         n_groups = len(set(s1_groups))
         n_splits = min(args.n_splits, max(2, n_groups))
-        trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed)
+        if args.ensemble:
+            print(f"Training Multi-Model Ensemble (LightGBM + CatBoost + XGBoost) across {n_splits} folds...")
+            trainer = EREnsembleTrainer(n_splits=n_splits, seed=args.seed)
+        else:
+            print(f"Training LightGBM model across {n_splits} folds...")
+            trainer = ERModelTrainer(n_splits=n_splits, seed=args.seed)
         model = trainer.train(X_train, y_train, s1_groups)
 
         probs_val, val_idx = trainer.predict_val_proba(X_train)
@@ -321,7 +338,7 @@ def main():
 
         if tracker:
             tracker.log_threshold_curve(tau_curve, score_curve)
-            if hasattr(model, "feature_importances_"):
+            if hasattr(model, "feature_importances_") and len(model.feature_importances_) > 0:
                 fi = dict(zip(extractor.FEATURE_NAMES, [float(x) for x in model.feature_importances_]))
                 tracker.log_feature_importances(fi)
     else:
@@ -469,7 +486,7 @@ def main():
         tracker.log_partition_summary(partition_summaries)
         completed_run = tracker.end_run()
         if completed_run:
-            print(f"[+] Run '{args.experiment_name}' recorded in experiment tracker (ID: {completed_run['run_id']})")
+            print(f"[+] Run '{exp_name}' recorded in experiment tracker (ID: {completed_run['run_id']})")
 
     # =========================================================================
     # Stage 3: Packaging & Validation Gate

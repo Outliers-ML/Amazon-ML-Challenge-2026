@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from src.pipeline.er_trainer import ERModelTrainer, compute_macro_f05, optimize_f05_threshold
+from src.pipeline.er_trainer import EREnsembleTrainer, ERModelTrainer, compute_macro_f05, optimize_f05_threshold
 
 
 def test_macro_f05_calculation():
@@ -57,7 +57,7 @@ def test_threshold_optimizer():
 def test_er_model_trainer_fit_and_predict():
     np.random.seed(42)
     N = 100
-    X = np.random.randn(N, 22).astype(np.float32)
+    X = np.random.randn(N, 27).astype(np.float32)
     # Signal: feature 0 strongly correlated with y
     y = (X[:, 0] > 0.0).astype(np.int32)
     s1_groups = [f"S1-{i // 4}" for i in range(N)]
@@ -122,7 +122,7 @@ def test_threshold_optimizer_mismatched_lengths():
 def test_er_model_trainer_validation_split_and_predict_val_proba():
     np.random.seed(42)
     N = 100
-    X = np.random.randn(N, 22).astype(np.float32)
+    X = np.random.randn(N, 27).astype(np.float32)
     y = (X[:, 0] > 0.0).astype(np.int32)
     s1_groups = [f"S1-{i // 4}" for i in range(N)]
 
@@ -144,4 +144,24 @@ def test_er_model_trainer_validation_split_and_predict_val_proba():
     assert np.array_equal(val_idx, trainer.val_indices_)
     assert len(probs_val) == len(trainer.val_indices_)
     assert np.all((probs_val >= 0.0) & (probs_val <= 1.0))
+
+
+def test_er_ensemble_trainer_fit_and_predict():
+    np.random.seed(42)
+    N = 60
+    X = np.random.randn(N, 27).astype(np.float32)
+    y = (X[:, 0] > 0.0).astype(np.int32)
+    s1_groups = [f"S1-{i // 3}" for i in range(N)]
+
+    trainer = EREnsembleTrainer(models=["lgbm", "catboost", "xgboost"], n_splits=3, seed=42)
+    trainer.train(X, y, s1_groups)
+
+    probs_val, val_idx = trainer.predict_val_proba(X)
+    assert len(probs_val) == len(val_idx)
+    assert np.all((probs_val >= 0.0) & (probs_val <= 1.0))
+
+    probs_test = trainer.predict_proba(X)
+    assert probs_test.shape == (N, 2)
+    assert np.allclose(probs_test[:, 0] + probs_test[:, 1], 1.0, atol=1e-5)
+    assert len(trainer.feature_importances_) == 27
 

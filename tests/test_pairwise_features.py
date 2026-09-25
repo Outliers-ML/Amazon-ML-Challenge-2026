@@ -18,7 +18,7 @@ def test_feature_extraction_values():
     }
     feats = extractor.extract_pair_features(r1, r2, rank=1, blocking_score=0.92)
     assert len(feats) == len(extractor.feature_names)
-    assert len(feats) == 22
+    assert len(feats) == 27
     # Name jaro winkler should be very high
     assert feats[extractor.feature_names.index("name_jaro_winkler")] > 0.85
     # Street number match should be +1.0
@@ -46,8 +46,8 @@ def test_all_feature_values_explicit():
     feats = extractor.extract_pair_features(r1, r2, rank=2, blocking_score=0.85)
     feat_map = dict(zip(extractor.feature_names, feats))
 
-    assert len(extractor.feature_names) == 22
-    assert len(feats) == 22
+    assert len(extractor.feature_names) == 27
+    assert len(feats) == 27
     assert feat_map["name_exact_match"] == 0.0  # "Acme Widgets" != "Acme Widgets LLC"
     assert feat_map["name_clean_exact_match"] == 1.0  # LLC stripped -> "acme widgets"
     assert feat_map["name_jaro_winkler"] == 1.0
@@ -58,12 +58,17 @@ def test_all_feature_values_explicit():
     assert feat_map["name_length_diff"] == 0.0
     assert feat_map["name_length_ratio"] == 1.0
     assert feat_map["name_first_token_match"] == 1.0
+    assert feat_map["name_soundex_match"] == 1.0
+    assert feat_map["name_soundex_jaccard"] == 1.0
+    assert feat_map["name_common_tokens_count"] == 2.0
     assert feat_map["addr_exact_match"] == 1.0
     assert feat_map["addr_token_jaccard"] == 1.0
     assert feat_map["addr_token_sort_ratio"] == 1.0
     assert feat_map["addr_token_set_ratio"] == 1.0
     assert feat_map["addr_street_num_status"] == 1.0
     assert feat_map["addr_postal_code_status"] == 1.0
+    assert feat_map["addr_locality_jaccard"] == 1.0
+    assert feat_map["addr_numeric_overlap"] == 1.0
     assert feat_map["addr_is_empty"] == 0.0
     assert feat_map["name_in_address_cross"] == 0.0
     assert feat_map["is_source2"] == 1.0
@@ -291,4 +296,26 @@ def test_extract_pairs_matrix_cache_key_entity_id(monkeypatch):
     r_no_id_2 = {"business_name": "Shop B", "business_address": "200 Main St"}
     mat_no_id = extractor.extract_pairs_matrix([r_no_id_1], [r_no_id_2])
     assert mat_no_id.shape == (1, len(extractor.feature_names))
+
+
+def test_phonetic_and_locality_features():
+    extractor = PairwiseFeatureExtractor()
+    r1 = {
+        "entity_id": "S1-99",
+        "business_name": "Chaudhary Textiles",
+        "business_address": "Shop 12 Sector 18, Noida, Uttar Pradesh 201301",
+    }
+    r2 = {
+        "entity_id": "S2-99",
+        "business_name": "Choudhary Textiles Ltd",
+        "business_address": "Plot 12 Sector 18 Commercial Complex, Noida, UP 201301",
+    }
+    feats = extractor.extract_pair_features(r1, r2)
+    feat_map = dict(zip(extractor.feature_names, feats))
+
+    assert feat_map["name_soundex_match"] == 1.0  # Chaudhary vs Choudhary -> C360
+    assert feat_map["name_soundex_jaccard"] == 1.0
+    assert feat_map["name_common_tokens_count"] == 1.0  # "textiles"
+    assert feat_map["addr_locality_jaccard"] > 0.0
+    assert feat_map["addr_numeric_overlap"] > 0.5
 

@@ -61,7 +61,7 @@ def test_e2e_toy_dataset_flow(tmp_path):
     target_rows = [s2.iloc[0].to_dict(), s3.iloc[0].to_dict()]
     X = extractor.extract_pairs_matrix(s1_rows, target_rows, ranks=[1, 2], scores=[10.0, 5.0])
     y = np.array([1, 1], dtype=np.int32)
-    assert X.shape == (2, 22)
+    assert X.shape == (2, len(extractor.feature_names))
 
     # Threshold optimization
     probs = np.array([0.95, 0.85])
@@ -283,6 +283,7 @@ def test_run_entity_resolution_e2e(tmp_path):
         "--zip-name", str(zip_file),
         "--sample-train-s1", "10",
         "--n-splits", "2",
+        "--no-track",
     ], capture_output=True, text=True)
 
     assert res.returncode == 0, f"run_entity_resolution failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
@@ -297,3 +298,91 @@ def test_run_entity_resolution_e2e(tmp_path):
     cand_lines = (out_dir / "candidate_pairs.tsv").read_text().splitlines()
     assert any(line.startswith("S1-T3\t") for line in match_lines)
     assert any(line.startswith("S1-T3\t") for line in cand_lines)
+
+
+def test_run_entity_resolution_ensemble_e2e(tmp_path):
+    train_dir = tmp_path / "train"
+    train_dir.mkdir(parents=True)
+    test_dir = tmp_path / "test"
+    test_dir.mkdir(parents=True)
+    out_dir = tmp_path / "output_ensemble"
+
+    tr_s1 = pd.DataFrame({
+        "entity_id": [f"S1-{i:02d}" for i in range(1, 7)],
+        "business_name": [
+            "Acme Tools Corp", "Acme Hardware Store", "Beta Logistics Inc",
+            "Gamma Services", "Delta Cafe", "Epsilon Books"
+        ],
+        "business_address": [
+            "123 Main St, New York, NY 10001", "123 Main Street, NY 10001", "456 Market St, SF, CA 94105",
+            "789 Broadway, NY 10003", "101 5th Ave, NY 10003", "202 Elm St, Austin, TX 78701"
+        ],
+        "country": ["US", "US", "US", "US", "US", "US"]
+    })
+    tr_s2 = pd.DataFrame({
+        "entity_id": ["S2-01", "S2-03", "S2-05"],
+        "business_name": ["Acme Tools", "Beta Logistics", "Delta Coffee Cafe"],
+        "business_address": ["123 Main St 10001", "456 Market St 94105", "101 5th Ave"],
+        "country": ["US", "US", "US"]
+    })
+    tr_s3 = pd.DataFrame({
+        "entity_id": ["S3-01", "S3-04"],
+        "business_name": ["Acme Tools Corporation", "Gamma Services LLC"],
+        "business_address": ["123 Main Street 10001", "789 Broadway"],
+        "country": ["US", "US"]
+    })
+    tr_gt = pd.DataFrame({
+        "source1_entity_id": [f"S1-{i:02d}" for i in range(1, 7)],
+        "matched_entity_ids": [
+            "S2-01,S3-01",
+            "",
+            "S2-03",
+            "S3-04",
+            "S2-05",
+            ""
+        ]
+    })
+    tr_s1.to_csv(train_dir / "train_source1.tsv", sep="\t", index=False)
+    tr_s2.to_csv(train_dir / "train_source2.tsv", sep="\t", index=False)
+    tr_s3.to_csv(train_dir / "train_source3.tsv", sep="\t", index=False)
+    tr_gt.to_csv(train_dir / "train_ground_truth.tsv", sep="\t", index=False)
+
+    te_s1 = pd.DataFrame({
+        "entity_id": ["S1-T1", "S1-T2"],
+        "business_name": ["Acme Tools", "Beta Logistics"],
+        "business_address": ["123 Main St 10001", "456 Market St 94105"],
+        "country": ["US", "US"]
+    })
+    te_s2 = pd.DataFrame({
+        "entity_id": ["S2-T1"],
+        "business_name": ["Acme Tools Inc"],
+        "business_address": ["123 Main St 10001"],
+        "country": ["US"]
+    })
+    te_s3 = pd.DataFrame({
+        "entity_id": ["S3-T2"],
+        "business_name": ["Beta Logistics Co"],
+        "business_address": ["456 Market St"],
+        "country": ["US"]
+    })
+    te_s1.to_csv(test_dir / "test_source1.tsv", sep="\t", index=False)
+    te_s2.to_csv(test_dir / "test_source2.tsv", sep="\t", index=False)
+    te_s3.to_csv(test_dir / "test_source3.tsv", sep="\t", index=False)
+
+    res = subprocess.run([
+        sys.executable,
+        "scripts/run_entity_resolution.py",
+        "--train-dir", str(train_dir),
+        "--test-dir", str(test_dir),
+        "--output-dir", str(out_dir),
+        "--ensemble",
+        "--sample-train-s1", "10",
+        "--n-splits", "2",
+        "--skip-pack",
+        "--no-track",
+    ], capture_output=True, text=True)
+
+    assert res.returncode == 0, f"run_entity_resolution --ensemble failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert "Multi-Model Ensemble" in res.stdout
+    assert (out_dir / "matching_results.tsv").exists()
+    assert (out_dir / "candidate_pairs.tsv").exists()

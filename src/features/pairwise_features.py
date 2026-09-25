@@ -11,7 +11,7 @@ import rapidfuzz.distance.JaroWinkler as JaroWinkler
 import rapidfuzz.distance.Levenshtein as Levenshtein
 import rapidfuzz.fuzz as fuzz
 
-from src.data.normalizer import NormalizedAddress, NormalizedName, TextNormalizer
+from src.data.normalizer import NormalizedAddress, NormalizedName, TextNormalizer, compute_soundex
 
 
 class PairwiseFeatureExtractor:
@@ -26,12 +26,17 @@ class PairwiseFeatureExtractor:
         "name_length_diff",
         "name_length_ratio",
         "name_first_token_match",
+        "name_soundex_match",
+        "name_soundex_jaccard",
+        "name_common_tokens_count",
         "addr_exact_match",
         "addr_token_jaccard",
         "addr_token_sort_ratio",
         "addr_token_set_ratio",
         "addr_street_num_status",
         "addr_postal_code_status",
+        "addr_locality_jaccard",
+        "addr_numeric_overlap",
         "addr_is_empty",
         "name_in_address_cross",
         "is_source2",
@@ -91,6 +96,22 @@ class PairwiseFeatureExtractor:
         name_len_ratio = float(min(len1, len2) / max_len) if max_len > 0 else 0.0
         first_tok_match = 1.0 if s1_n.tokens and t_n.tokens and s1_n.tokens[0] == t_n.tokens[0] else 0.0
 
+        # Phonetic Soundex & Shared Token Features
+        sx1 = compute_soundex(s1_n.tokens[0]) if s1_n.tokens else ""
+        sx2 = compute_soundex(t_n.tokens[0]) if t_n.tokens else ""
+        name_soundex_match = 1.0 if sx1 and sx2 and sx1 == sx2 else 0.0
+
+        sx_set1 = {compute_soundex(t) for t in s1_n.tokens if t}
+        sx_set2 = {compute_soundex(t) for t in t_n.tokens if t}
+        if sx_set1 and sx_set2:
+            name_soundex_jaccard = float(len(sx_set1 & sx_set2) / len(sx_set1 | sx_set2))
+        else:
+            name_soundex_jaccard = 0.0
+
+        toks_s1 = set(s1_n.tokens)
+        toks_t1 = set(t_n.tokens)
+        name_common_tokens_count = float(len(toks_s1 & toks_t1))
+
         # 2. Address Metrics
         a1, a2 = s1_a.clean_address, t_a.clean_address
         raw_a1, raw_a2 = s1_a.raw.lower(), t_a.raw.lower()
@@ -119,6 +140,21 @@ class PairwiseFeatureExtractor:
             postal_status = 1.0 if s1_a.postal_code == t_a.postal_code else -1.0
         else:
             postal_status = 0.0
+
+        # Locality & Numeric Overlap
+        locality1 = {t for t in s1_a.tokens if not t.isdigit() and len(t) >= 3}
+        locality2 = {t for t in t_a.tokens if not t.isdigit() and len(t) >= 3}
+        if locality1 and locality2:
+            addr_locality_jaccard = float(len(locality1 & locality2) / len(locality1 | locality2))
+        else:
+            addr_locality_jaccard = 0.0
+
+        nums1 = {t for t in s1_a.tokens if any(ch.isdigit() for ch in t)}
+        nums2 = {t for t in t_a.tokens if any(ch.isdigit() for ch in t)}
+        if nums1 and nums2:
+            addr_numeric_overlap = float(len(nums1 & nums2) / len(nums1 | nums2))
+        else:
+            addr_numeric_overlap = 0.0
 
         addr_empty = 1.0 if not a1 or not a2 else 0.0
 
@@ -151,12 +187,17 @@ class PairwiseFeatureExtractor:
             name_len_diff,
             name_len_ratio,
             first_tok_match,
+            name_soundex_match,
+            name_soundex_jaccard,
+            name_common_tokens_count,
             addr_exact,
             addr_tok_jaccard,
             addr_tok_sort,
             addr_tok_set,
             street_status,
             postal_status,
+            addr_locality_jaccard,
+            addr_numeric_overlap,
             addr_empty,
             cross_match,
             is_s2,

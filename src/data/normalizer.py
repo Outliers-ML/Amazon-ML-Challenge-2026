@@ -18,6 +18,35 @@ LEGAL_SUFFIXES = {
 
 NULL_STRINGS = {"", "nan", "none", "null", "<na>", "n/a"}
 
+_SOUNDEX_MAP = {
+    "B": "1", "F": "1", "P": "1", "V": "1",
+    "C": "2", "G": "2", "J": "2", "K": "2", "Q": "2", "S": "2", "X": "2", "Z": "2",
+    "D": "3", "T": "3",
+    "L": "4",
+    "M": "5", "N": "5",
+    "R": "6",
+}
+
+
+def compute_soundex(word: str) -> str:
+    """Compute American Soundex phonetic code for a token string."""
+    if not word:
+        return ""
+    clean = re.sub(r"[^A-Za-z]", "", str(word)).upper()
+    if not clean:
+        return ""
+    first_letter = clean[0]
+    encoded = [_SOUNDEX_MAP.get(ch, "0") for ch in clean[1:]]
+    collapsed = []
+    prev = _SOUNDEX_MAP.get(first_letter, "0")
+    for d in encoded:
+        if d != "0" and d != prev:
+            collapsed.append(d)
+        prev = d
+    digits = "".join(collapsed)
+    return (first_letter + digits + "000")[:4]
+
+
 @dataclass
 class NormalizedName:
     raw: str
