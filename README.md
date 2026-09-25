@@ -159,6 +159,30 @@ pytest tests/
 
 ---
 
+## 📊 Interactive Experiment Dashboard & Tracking
+
+Launch the Streamlit visualization dashboard to monitor, compare, and track progress across all your experiment runs:
+
+```bash
+streamlit run scripts/dashboard.py --server.port 8501
+```
+
+### Dashboard Features
+- **Leaderboard View:** Comparison table of all runs ranked by validation Macro $F_{0.5}$, showing decision threshold $\tau^*$, sample sizes, candidates $K$, and run times.
+- **Threshold Sensitivity Curves:** Plotly curves showing how Macro $F_{0.5}$ changes as $\tau$ varies from $0.50$ to $0.95$, highlighting the optimal plateau and chosen $\tau^*$.
+- **Feature Importances:** Visual rankings of the 22 pairwise features (Jaro-Winkler, Levenshtein, token set ratio, postal code match status, etc.).
+- **Geographic Partition Breakdown:** Bar and distribution charts comparing predictions (matches vs. singletons) across `US`, `India`, and out-of-domain `France`.
+- **Side-by-Side Run Comparison:** Compare any two runs to inspect parameter deltas and score improvements.
+
+### Automatic Logging from Pipeline
+Any execution of the Entity Resolution orchestrator automatically registers into the dashboard ledger (`experiments/runs.json`):
+```bash
+python scripts/run_entity_resolution.py --experiment-name "Exp-HighRecall-K35" --max-candidates 35
+```
+*(Use `--no-track` to disable logging if performing scratch dry runs).*
+
+---
+
 ## 🔄 Git Version Control Workflow
 
 The local Git repository is initialized on branch `main`.
