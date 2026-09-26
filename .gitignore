@@ -101,6 +101,8 @@ runs/
 *.swo
 student_resource/dataset/
 output/
+output_smoketest/
+models/
+*.log
 catboost_info/
-run_ensemble.log
 scripts/run_bg.sh

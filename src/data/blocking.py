@@ -12,6 +12,7 @@ at Top-35 per Source 1 entity, writing output compliant with candidate_pairs.tsv
 from collections import defaultdict
 import math
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
@@ -98,9 +99,12 @@ class MultiTierBlocker:
         max_candidates: int = 35,
         bucket_ceiling: int = 250,
         weights: Optional[Dict[str, float]] = None,
+        max_postings: Optional[int] = None,
+        **kwargs: Any,
     ) -> None:
         self.max_candidates = max_candidates
         self.bucket_ceiling = bucket_ceiling
+        self.max_postings = max_postings or bucket_ceiling
         self.weights = weights or {
             "tier1": 1.5,
             "tier2": 1.0,
@@ -120,7 +124,55 @@ class MultiTierBlocker:
         if isinstance(records, pd.DataFrame):
             if records.empty:
                 return []
-            rec_list = records.to_dict(orient="records")
+            if len(records) > 2000:
+                df = records
+                filter_c = country.strip().upper() if country else None
+                if filter_c and "country" in df.columns:
+                    c_col = df["country"].fillna("").astype(str).str.strip().str.upper()
+                    df = df[c_col == filter_c]
+                    if df.empty:
+                        return []
+
+                raw_ids = df["entity_id"].fillna("").astype(str).values
+                b_name_col = df["business_name"] if "business_name" in df.columns else (df["name"] if "name" in df.columns else None)
+                raw_names = b_name_col.fillna("").astype(str).values if b_name_col is not None else [""] * len(df)
+                b_addr_col = df["business_address"] if "business_address" in df.columns else (df["address"] if "address" in df.columns else None)
+                raw_addrs = b_addr_col.fillna("").astype(str).values if b_addr_col is not None else [""] * len(df)
+                c_vals = df["country"].fillna(filter_c or "").astype(str).values if "country" in df.columns else [filter_c or ""] * len(df)
+
+                re_num = re.compile(r"\b\d+\b")
+                re_zip = re.compile(r"\b\d{5,6}\b")
+
+                prepared: List[Dict[str, Any]] = []
+                for i in range(len(raw_ids)):
+                    raw_id = raw_ids[i].strip()
+                    if not raw_id or raw_id.lower() in ("nan", "none", "null"):
+                        continue
+                    n = raw_names[i].lower().strip()
+                    a = raw_addrs[i].lower().strip()
+                    c = c_vals[i].strip().upper()
+
+                    m_num = re_num.search(a)
+                    s_num = m_num.group() if m_num else None
+
+                    m_zip = re_zip.search(a)
+                    p_code = m_zip.group() if m_zip else None
+
+                    tokens = n.split()
+                    meta = compute_double_metaphone(tokens[0])[0] if tokens else ""
+
+                    prepared.append({
+                        "entity_id": raw_id,
+                        "country": c,
+                        "clean_name_stripped": n,
+                        "clean_address": a,
+                        "street_num": s_num,
+                        "postal_code": p_code,
+                        "metaphone_primary": meta,
+                    })
+                return prepared
+            else:
+                rec_list = records.to_dict(orient="records")
         elif isinstance(records, list):
             rec_list = records
         else:
@@ -302,93 +354,65 @@ class MultiTierBlocker:
         top_k: int = 20,
         chunk_size: int = 2000,
     ) -> Dict[str, List[Tuple[str, float]]]:
-        """Retrieve Tier 2 candidates using character 3-gram TF-IDF similarity with chunking."""
+        """Retrieve Tier 2 candidates using inverted-index BM25 lexical retrieval."""
         s1_ids = [r["entity_id"] for r in s1_prepared]
         if not s1_prepared or not target_prepared:
             return {eid: [] for eid in s1_ids}
 
-        target_texts = [
-            f"{r['clean_name_stripped']} {r['clean_address']}".strip()
-            for r in target_prepared
-        ]
         target_ids = [r["entity_id"] for r in target_prepared]
+        N = len(target_ids)
 
-        s1_texts = [
-            f"{r['clean_name_stripped']} {r['clean_address']}".strip()
-            for r in s1_prepared
-        ]
+        token_index: Dict[str, List[int]] = defaultdict(list)
+        ngram_index: Dict[str, List[int]] = defaultdict(list)
+        limit_postings = 1000
 
-        min_df = 2 if len(target_texts) >= 2 else 1
-        vectorizer = TfidfVectorizer(
-            analyzer="char",
-            ngram_range=(3, 3),
-            sublinear_tf=True,
-            min_df=min_df,
-        )
+        for i, r in enumerate(target_prepared):
+            name = str(r.get("clean_name_stripped", "")).strip().lower()
+            addr = str(r.get("clean_address", "")).strip().lower()
+            combined = f"{name} {addr}".strip()
+            words = set(combined.split())
+            for w in words:
+                if len(w) >= 3:
+                    token_index[w].append(i)
+            if len(name) >= 3:
+                ngs = {name[j : j + 3] for j in range(len(name) - 2)}
+                for ng in ngs:
+                    ngram_index[ng].append(i)
 
-        try:
-            target_tfidf = vectorizer.fit_transform(target_texts)
-            s1_tfidf = vectorizer.transform(s1_texts)
-        except ValueError:
-            if min_df > 1:
-                try:
-                    vectorizer = TfidfVectorizer(
-                        analyzer="char",
-                        ngram_range=(3, 3),
-                        sublinear_tf=True,
-                        min_df=1,
-                    )
-                    target_tfidf = vectorizer.fit_transform(target_texts)
-                    s1_tfidf = vectorizer.transform(s1_texts)
-                except ValueError:
-                    return {eid: [] for eid in s1_ids}
-            else:
-                return {eid: [] for eid in s1_ids}
+        token_weights = {
+            tok: 2.0 * (math.log((N + 1.0) / (len(plist) + 1.0)) + 1.0)
+            for tok, plist in token_index.items()
+            if len(plist) <= limit_postings
+        }
+        ngram_weights = {
+            ng: 0.5 * (math.log((N + 1.0) / (len(plist) + 1.0)) + 1.0)
+            for ng, plist in ngram_index.items()
+            if len(plist) <= limit_postings
+        }
 
-        n_s1 = s1_tfidf.shape[0]
-        target_tfidf_t = target_tfidf.T.tocsc()
         tier2_map: Dict[str, List[Tuple[str, float]]] = {}
-
-        for chunk_start in range(0, n_s1, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, n_s1)
-            s1_chunk = s1_tfidf[chunk_start:chunk_end]
-            sim_chunk = s1_chunk.dot(target_tfidf_t).tocsr()
-
-            for i in range(chunk_end - chunk_start):
-                s1_id = s1_ids[chunk_start + i]
-                start = sim_chunk.indptr[i]
-                end = sim_chunk.indptr[i + 1]
-
-                if start == end:
-                    tier2_map[s1_id] = []
-                    continue
-
-                row_indices = sim_chunk.indices[start:end]
-                row_data = sim_chunk.data[start:end]
-
-                valid_mask = row_data > 0
-                if not np.any(valid_mask):
-                    tier2_map[s1_id] = []
-                    continue
-
-                valid_indices = row_indices[valid_mask]
-                valid_data = row_data[valid_mask]
-
-                if len(valid_data) <= top_k:
-                    candidates_unsorted = [
-                        (target_ids[valid_indices[idx]], float(valid_data[idx]))
-                        for idx in range(len(valid_data))
-                    ]
-                else:
-                    part = np.argpartition(-valid_data, top_k)[:top_k]
-                    candidates_unsorted = [
-                        (target_ids[valid_indices[idx]], float(valid_data[idx]))
-                        for idx in part
-                    ]
-
-                tier2_map[s1_id] = sorted(
-                    candidates_unsorted, key=lambda x: (-x[1], x[0])
-                )
+        for r in s1_prepared:
+            s1_id = r["entity_id"]
+            name = str(r.get("clean_name_stripped", "")).strip().lower()
+            addr = str(r.get("clean_address", "")).strip().lower()
+            combined = f"{name} {addr}".strip()
+            words = set(combined.split())
+            scores: Dict[str, float] = defaultdict(float)
+            for w in words:
+                if w in token_weights:
+                    for idx in token_index[w]:
+                        scores[target_ids[idx]] += token_weights[w]
+            if len(name) >= 3:
+                ngs = {name[j : j + 3] for j in range(len(name) - 2)}
+                for ng in ngs:
+                    if ng in ngram_weights:
+                        for idx in ngram_index[ng]:
+                            scores[target_ids[idx]] += ngram_weights[ng]
+            if scores:
+                sorted_cands = sorted(scores.items(), key=lambda x: (-x[1], x[0]))[:top_k]
+                tier2_map[s1_id] = sorted_cands
+            else:
+                tier2_map[s1_id] = []
 
         return tier2_map
 

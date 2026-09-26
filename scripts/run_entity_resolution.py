@@ -31,11 +31,7 @@ else:
 import numpy as np
 import pandas as pd
 
-try:
-    from src.data.multi_tier_blocking import MultiTierBlocker
-except ImportError:
-    from src.data.blocking import MultiKeyBlocker as MultiTierBlocker
-from src.data.blocking import MultiKeyBlocker
+from src.data.blocking import MultiKeyBlocker, MultiTierBlocker
 from src.features.pairwise_features import PairwiseFeatureExtractor
 from src.models.cross_encoder import CrossEncoderReranker, format_pair_text
 from src.pipeline.er_trainer import (
@@ -87,6 +83,12 @@ def main():
         type=int,
         default=50000,
         help="Number of S1 training records to sample (-1 for full dataset, default: 50000)",
+    )
+    parser.add_argument(
+        "--sample-test-s1",
+        type=int,
+        default=-1,
+        help="Number of S1 test records to sample (-1 for full dataset, default: -1)",
     )
     parser.add_argument(
         "--max-candidates",
@@ -170,6 +172,11 @@ def main():
         help="Append to existing matching_results.tsv and candidate_pairs.tsv instead of overwriting",
     )
     parser.add_argument(
+        "--s1-slice",
+        default=None,
+        help="Slice of S1 entities to process in partition, e.g. '0:100000' or '100000:200000'",
+    )
+    parser.add_argument(
         "--no-track",
         action="store_true",
         help="Disable logging experiment to tracker/dashboard ledger",
@@ -212,6 +219,11 @@ def main():
         type=float,
         default=0.60,
         help="Secondary candidate admission threshold for disambiguate_and_guard (default: 0.60)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="Device to use for model inference and training (e.g. cuda or cpu, default: cuda)",
     )
 
     args = parser.parse_args()
@@ -318,6 +330,20 @@ def main():
 
         print(f"Effective training S1 entities: {len(train_s1)}")
 
+        # In mini-slice smoke test mode (e.g. <= 5000 entities), subset target tables to keep test swift
+        if 0 < args.sample_train_s1 <= 5000:
+            print("Mini-slice smoke test detected: subsetting targets to ground truth matches + random slice...")
+            gt_targets_sample = set()
+            for s1_id in train_s1["entity_id"]:
+                gt_targets_sample.update(gt_map.get(s1_id, set()))
+            s2_gt = train_s2[train_s2["entity_id"].isin(gt_targets_sample)]
+            s3_gt = train_s3[train_s3["entity_id"].isin(gt_targets_sample)]
+            s2_rand = train_s2.sample(n=min(len(train_s2), 25000), random_state=args.seed)
+            s3_rand = train_s3.sample(n=min(len(train_s3), 25000), random_state=args.seed)
+            train_s2 = pd.concat([s2_gt, s2_rand], ignore_index=True).drop_duplicates(subset=["entity_id"])
+            train_s3 = pd.concat([s3_gt, s3_rand], ignore_index=True).drop_duplicates(subset=["entity_id"])
+            print(f"Effective mini-slice targets: S2={len(train_s2)}, S3={len(train_s3)}")
+
         # Blocking per country partition on training set
         train_cands: Dict[str, List[str]] = {}
         train_countries = train_s1["country"].fillna("UNKNOWN").unique()
@@ -328,10 +354,18 @@ def main():
             cands_p = blocker.block_country_partition(s1_p, s2_p, s3_p)
             train_cands.update(cands_p)
 
-        # Fast row lookup dictionaries
+        # Fast row lookup dictionaries (index only referenced candidate and ground truth IDs)
         s1_dict = {row["entity_id"]: row for row in train_s1.to_dict(orient="records")}
-        target_dict = {row["entity_id"]: row for row in train_s2.to_dict(orient="records")}
-        target_dict.update({row["entity_id"]: row for row in train_s3.to_dict(orient="records")})
+        needed_target_ids = set()
+        for cands in train_cands.values():
+            needed_target_ids.update(cands)
+        for s1_id in train_s1["entity_id"]:
+            needed_target_ids.update(gt_map.get(s1_id, set()))
+
+        s2_needed = train_s2[train_s2["entity_id"].isin(needed_target_ids)]
+        s3_needed = train_s3[train_s3["entity_id"].isin(needed_target_ids)]
+        target_dict = {row["entity_id"]: row for row in s2_needed.to_dict(orient="records")}
+        target_dict.update({row["entity_id"]: row for row in s3_needed.to_dict(orient="records")})
 
         # Assemble training pairs (s1, target)
         pair_s1_rows = []
@@ -469,6 +503,27 @@ def main():
 
     print(f"Test entities — S1: {len(test_s1)}, S2: {len(test_s2)}, S3: {len(test_s3)}")
 
+    if args.sample_test_s1 > 0 and len(test_s1) > args.sample_test_s1:
+        print(f"Sampling {args.sample_test_s1} records from {len(test_s1)} test S1 entities...")
+        if "country" in test_s1.columns:
+            sampled_dfs = []
+            for country, grp in test_s1.groupby(test_s1["country"].fillna("UNKNOWN")):
+                n_c = int(round(args.sample_test_s1 * len(grp) / len(test_s1)))
+                n_c = max(1, min(len(grp), n_c))
+                sampled_dfs.append(grp.sample(n=n_c, random_state=args.seed))
+            test_s1 = pd.concat(sampled_dfs, ignore_index=True)
+            if len(test_s1) > args.sample_test_s1:
+                test_s1 = test_s1.sample(n=args.sample_test_s1, random_state=args.seed).reset_index(drop=True)
+        else:
+            test_s1 = test_s1.sample(n=args.sample_test_s1, random_state=args.seed).reset_index(drop=True)
+        print(f"Effective test S1 entities: {len(test_s1)}")
+
+        if 0 < args.sample_test_s1 <= 5000:
+            print("Mini-slice smoke test detected: subsetting test targets to random slice...")
+            test_s2 = test_s2.sample(n=min(len(test_s2), 25000), random_state=args.seed)
+            test_s3 = test_s3.sample(n=min(len(test_s3), 25000), random_state=args.seed)
+            print(f"Effective mini-slice test targets: S2={len(test_s2)}, S3={len(test_s3)}")
+
     unique_test_countries = test_s1["country"].fillna("UNKNOWN").unique()
     if args.countries:
         selected_c = [c.strip() for c in args.countries.split(",") if c.strip()]
@@ -477,8 +532,11 @@ def main():
 
     reranker = None
     if args.use_cross_encoder:
-        print(f"[+] Initializing Cross-Encoder reranker: {args.cross_encoder_model}")
-        reranker = CrossEncoderReranker(model_name=args.cross_encoder_model)
+        ce_model_path = args.cross_encoder_model
+        if ce_model_path == "BAAI/bge-reranker-v2-m3" and (PROJECT_ROOT / "models" / "cross_encoder").is_dir():
+            ce_model_path = str(PROJECT_ROOT / "models" / "cross_encoder")
+        print(f"[+] Initializing Cross-Encoder reranker: {ce_model_path}")
+        reranker = CrossEncoderReranker(model_name=ce_model_path)
 
     tau_singleton = args.tau if args.tau is not None else args.tau_singleton
     tau_secondary = args.tau_secondary
@@ -490,8 +548,14 @@ def main():
         s2_part = test_s2[test_s2["country"].fillna("UNKNOWN") == country]
         s3_part = test_s3[test_s3["country"].fillna("UNKNOWN") == country]
 
+        if args.s1_slice:
+            parts = args.s1_slice.split(":")
+            s_start = int(parts[0]) if parts[0].strip() else None
+            s_end = int(parts[1]) if len(parts) > 1 and parts[1].strip() else None
+            s1_part = s1_part.iloc[s_start:s_end].reset_index(drop=True)
+
         print(f"\nProcessing partition [{p_idx + 1}/{len(unique_test_countries)}] — Country: '{country}' "
-              f"(S1: {len(s1_part)}, S2: {len(s2_part)}, S3: {len(s3_part)})...", flush=True)
+              f"(S1: {len(s1_part):,}, S2: {len(s2_part):,}, S3: {len(s3_part):,})...", flush=True)
 
         # 1. Blocking
         part_cands = blocker.block_country_partition(s1_part, s2_part, s3_part)
@@ -510,10 +574,15 @@ def main():
             write_header=(not cand_has_content),
         )
 
-        # 2. Pairwise Feature Extraction & Fast GBDT Scoring
+        # 2. Pairwise Feature Extraction & Fast GBDT Scoring (index only needed candidates)
         s1_part_dict = {row["entity_id"]: row for row in s1_part.to_dict(orient="records")}
-        target_part_dict = {row["entity_id"]: row for row in s2_part.to_dict(orient="records")}
-        target_part_dict.update({row["entity_id"]: row for row in s3_part.to_dict(orient="records")})
+        needed_test_cands = set()
+        for clist in part_cands.values():
+            needed_test_cands.update(clist)
+        s2_needed = s2_part[s2_part["entity_id"].isin(needed_test_cands)]
+        s3_needed = s3_part[s3_part["entity_id"].isin(needed_test_cands)]
+        target_part_dict = {row["entity_id"]: row for row in s2_needed.to_dict(orient="records")}
+        target_part_dict.update({row["entity_id"]: row for row in s3_needed.to_dict(orient="records")})
 
         entity_candidate_records: Dict[str, List[Dict[str, Any]]] = {s1_id: [] for s1_id in s1_part["entity_id"]}
 
@@ -632,7 +701,7 @@ def main():
 
             if ce_text_pairs:
                 print(f"    ... running Cross-Encoder reranking on {len(ce_text_pairs):,} candidate pairs", flush=True)
-                p_ce_scores = reranker.predict_proba(ce_text_pairs, batch_size=256)
+                p_ce_scores = reranker.predict_proba(ce_text_pairs, batch_size=512)
                 for (s1_id, c_id, cand_info), p_ce in zip(ce_pairs_to_score, p_ce_scores):
                     p_final = compute_meta_probability(
                         p_ce=float(p_ce),

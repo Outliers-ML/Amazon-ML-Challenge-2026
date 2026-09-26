@@ -360,5 +360,347 @@
       }
     },
     "duration_seconds": 1382.72
+  },
+  {
+    "run_id": "run-20260925-170415-b42c10",
+    "run_name": "Ensemble-LGBM-CatBoost-XGBoost-27Feat",
+    "timestamp": "2026-09-25T17:04:15.179086+00:00",
+    "params": {
+      "model_type": "Ensemble(LightGBM+CatBoost+XGBoost)",
+      "sample_train_s1": 500,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": true,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9153282268806461,
+      "best_tau": 0.575,
+      "train_pairs": 12710,
+      "train_positives": 1732,
+      "total_test_s1": 1000,
+      "total_test_matched": 31,
+      "total_test_singletons": 969
+    },
+    "feature_importances": {
+      "name_exact_match": 0.0026839035980304373,
+      "name_clean_exact_match": 0.003907080786251209,
+      "name_jaro_winkler": 0.03160533517012952,
+      "name_levenshtein_ratio": 0.012955555909829383,
+      "name_token_sort_ratio": 0.04374378122719162,
+      "name_token_set_ratio": 0.011903128039696443,
+      "name_char_3gram_jaccard": 0.03130378576383842,
+      "name_length_diff": 0.010381781694152367,
+      "name_length_ratio": 0.015647387709439835,
+      "name_first_token_match": 0.006598987874419191,
+      "name_soundex_match": 0.002801513907597239,
+      "name_soundex_jaccard": 0.022833077761266127,
+      "name_common_tokens_count": 0.006889030732012216,
+      "addr_exact_match": 0.00015077577245007853,
+      "addr_token_jaccard": 0.10738180042603578,
+      "addr_token_sort_ratio": 0.07262801866361099,
+      "addr_token_set_ratio": 0.3195403090779398,
+      "addr_street_num_status": 0.06190418335053527,
+      "addr_postal_code_status": 0.0002585710950129862,
+      "addr_locality_jaccard": 0.01722315070709317,
+      "addr_numeric_overlap": 0.03909753281944789,
+      "addr_is_empty": 0.018264684985404928,
+      "name_in_address_cross": 1.3613122827211936e-05,
+      "is_source2": 0.018025951397219953,
+      "is_source3": 0.0043033226361356555,
+      "blocking_rank": 0.02337143294917289,
+      "blocking_score": 0.023004538776779673,
+      "name_lcs_ratio": 0.01820601593715191,
+      "addr_lcs_ratio": 0.04525442906821258,
+      "name_char_3gram_dice": 0.028117318704374655,
+      "dense_cosine_similarity": 0.0,
+      "dense_norm_difference": 0.0
+    },
+    "threshold_curve": {
+      "thresholds": [
+        0.5,
+        0.51875,
+        0.5375,
+        0.55625,
+        0.575,
+        0.59375,
+        0.6125,
+        0.63125,
+        0.65,
+        0.66875,
+        0.6875,
+        0.70625,
+        0.725,
+        0.74375,
+        0.7625,
+        0.78125,
+        0.8,
+        0.81875,
+        0.8374999999999999,
+        0.85625,
+        0.875,
+        0.89375,
+        0.9125,
+        0.9312499999999999,
+        0.95
+      ],
+      "scores": [
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9153282268806461,
+        0.9132070147594341,
+        0.9132070147594341,
+        0.9111236814261008,
+        0.9111236814261008,
+        0.9106474909499105,
+        0.9097384000408195,
+        0.9097384000408195,
+        0.9097384000408195,
+        0.9097384000408195,
+        0.9097384000408195,
+        0.9097384000408195,
+        0.9088293091317285,
+        0.9088293091317285,
+        0.9084446937471131,
+        0.9084446937471131,
+        0.9072952182226376
+      ]
+    },
+    "partition_summary": {
+      "India": {
+        "total": 468,
+        "matched": 10,
+        "singletons": 458
+      },
+      "US": {
+        "total": 383,
+        "matched": 11,
+        "singletons": 372
+      },
+      "France": {
+        "total": 149,
+        "matched": 10,
+        "singletons": 139
+      }
+    },
+    "duration_seconds": 237.73
+  },
+  {
+    "run_id": "run-20260925-175321-4e3223",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-25T17:53:21.369598+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9991123081996709,
+      "best_tau": 0.8,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 1000,
+      "total_test_matched": 28,
+      "total_test_singletons": 972
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "India": {
+        "total": 468,
+        "matched": 9,
+        "singletons": 459
+      },
+      "US": {
+        "total": 383,
+        "matched": 6,
+        "singletons": 377
+      },
+      "France": {
+        "total": 149,
+        "matched": 13,
+        "singletons": 136
+      }
+    },
+    "duration_seconds": 118.4
+  },
+  {
+    "run_id": "run-20260925-192604-0f50be",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-25T19:26:04.655206+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9991123081996709,
+      "best_tau": 0.8,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 1732544,
+      "total_test_matched": 4616,
+      "total_test_singletons": 384
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "France": {
+        "total": 5000,
+        "matched": 4616,
+        "singletons": 384
+      }
+    },
+    "duration_seconds": 202.38
+  },
+  {
+    "run_id": "run-20260925-193016-b4afee",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-25T19:30:16.943639+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.25,
+      "ce_max_keep": 2,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9991123081996709,
+      "best_tau": 0.8,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 1732544,
+      "total_test_matched": 235075,
+      "total_test_singletons": 24377
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "France": {
+        "total": 259452,
+        "matched": 235075,
+        "singletons": 24377
+      }
+    },
+    "duration_seconds": 1238.73
+  },
+  {
+    "run_id": "run-20260926-050910-2a87b2",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-26T05:09:10.675558+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9991123081996709,
+      "best_tau": 0.8,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 1732544,
+      "total_test_matched": 640759,
+      "total_test_singletons": 169227
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "India": {
+        "total": 809986,
+        "matched": 640759,
+        "singletons": 169227
+      }
+    },
+    "duration_seconds": 7750.06
+  },
+  {
+    "run_id": "run-20260926-071845-e434fc",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-26T07:18:45.792708+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": true,
+      "cross_encoder_model": "BAAI/bge-reranker-v2-m3",
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": true
+    },
+    "metrics": {
+      "macro_f05": 0.9991123081996709,
+      "best_tau": 0.8,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 1732544,
+      "total_test_matched": 585336,
+      "total_test_singletons": 77770
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "US": {
+        "total": 663106,
+        "matched": 585336,
+        "singletons": 77770
+      }
+    },
+    "duration_seconds": 4751.32
   }
 ]
