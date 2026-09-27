@@ -140,7 +140,7 @@ def main():
         cand_ids_mined = cdata["cand_ids_mined"].tolist()
         
         # Subsample by entity to avoid 16GB RSS ulimit OOM
-        MAX_ROWS = 8000000
+        MAX_ROWS = 1000000000 # Increased for unlimited memory server
         if len(X_train) > MAX_ROWS:
             print(f"  Subsampling from {len(X_train)} to ~{MAX_ROWS} rows to prevent OOM...")
             
