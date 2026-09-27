@@ -318,22 +318,31 @@ def optimize_f05_threshold(
 
     thresholds = [float(t) for t in np.linspace(min_tau, max_tau, tau_steps)]
     scores = []
+    
+    if use_real_disambiguation:
+        import pandas as pd
+        # Build base dataframe ONCE to avoid O(N * tau_steps) Python overhead
+        df_dict = {
+            "source1_id": s1_ids,
+            "candidate_id": cand_ids,
+            "p_final": probs,
+        }
+        if countries:
+            if len(countries) == len(s1_ids):
+                df_dict["country"] = list(countries)
+            else:
+                df_dict["country"] = [countries[i % len(countries)] for i in range(len(s1_ids))]
+        else:
+            df_dict["country"] = ""
+        base_df = pd.DataFrame(df_dict)
+
     for tau in thresholds:
         if use_real_disambiguation:
-            # Build scored_pairs list for disambiguate_and_guard
-            scored_pairs = []
-            for s1, cand, p in zip(s1_ids, cand_ids, probs):
-                if float(p) >= tau * 0.7:  # Buffer below tau to let disambiguation decide
-                    country = countries[len(scored_pairs) % len(countries)] if countries else ""
-                    scored_pairs.append({
-                        "source1_id": s1,
-                        "candidate_id": cand,
-                        "p_final": float(p),
-                        "country": country if countries else "",
-                    })
+            # Vectorized filter runs instantly
+            scored_pairs_df = base_df[base_df["p_final"] >= tau * 0.7]
 
             pred_map = disambiguate_and_guard(
-                scored_pairs=scored_pairs,
+                scored_pairs=scored_pairs_df,
                 all_s1_ids=all_s1_ids_list,
                 tau_singleton=tau,
                 tau_secondary=tau * 0.85,
