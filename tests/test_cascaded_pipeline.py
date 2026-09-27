@@ -531,11 +531,10 @@ def test_ensemble_trainer_predict_components():
     y = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
     groups = ["G1", "G1", "G2", "G2", "G3", "G3", "G4", "G4"]
 
-    trainer = EREnsembleTrainer(models=["lgbm", "xgboost", "catboost"], n_splits=2, seed=42)
+    trainer = EREnsembleTrainer(models=["xgboost", "catboost"], n_splits=2, seed=42)
     trainer.train(X, y, groups)
 
     preds = trainer.predict_components(X)
-    assert "lgbm" in preds
     assert "xgboost" in preds
     assert "catboost" in preds
     for name, p in preds.items():

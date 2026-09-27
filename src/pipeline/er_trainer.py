@@ -402,7 +402,7 @@ class ERModelTrainer:
 
 
 class EREnsembleTrainer:
-    """Multi-model ensemble trainer combining LightGBM, CatBoost, and XGBoost."""
+    """Multi-model ensemble trainer combining XGBoost and CatBoost."""
 
     def __init__(
         self,
@@ -412,7 +412,7 @@ class EREnsembleTrainer:
         seed: int = 42,
         use_gpu: bool = False,
     ) -> None:
-        self.model_names = models or ["lgbm", "catboost", "xgboost"]
+        self.model_names = models or ["xgboost", "catboost"]
         self.n_splits = n_splits
         self.seed = seed
         self.use_gpu = use_gpu
@@ -465,6 +465,8 @@ class EREnsembleTrainer:
                     "learning_rate": 0.05,
                     "num_leaves": 31,
                     "max_depth": 6,
+                    "min_child_samples":50,
+                    "min_split_gain":1e-4,
                     "subsample": 0.8,
                     "colsample_bytree": 0.8,
                     "random_state": self.seed,

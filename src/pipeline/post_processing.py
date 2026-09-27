@@ -51,6 +51,7 @@ def disambiguate_and_guard(
     all_s1_ids: Optional[Sequence[str]] = None,
     tau_singleton: float = 0.74,
     tau_secondary: float = 0.60,
+    max_matches: Optional[int] = 6,
     enforce_prefix: bool = True,
 ) -> Dict[str, List[str]]:
     """Resolve candidate pairs using bipartite matching and post-pruning singleton guard.
@@ -232,7 +233,7 @@ def disambiguate_and_guard(
             cand_list.sort(key=lambda item: (-item[1], item[0]))
             top_score = cand_list[0][1]
             if top_score >= tau_singleton:
-                results[s1] = [cand for cand, _ in cand_list]
+                results[s1] = [cand for cand, _ in cand_list[:max_matches]]
             else:
                 # Suppress entire match list to [] (preserving singleton credit)
                 results[s1] = []

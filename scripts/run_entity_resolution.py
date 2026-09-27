@@ -221,6 +221,12 @@ def main():
         help="Secondary candidate admission threshold for disambiguate_and_guard (default: 0.60)",
     )
     parser.add_argument(
+        "--max-matches",
+        type=int,
+        default=6,
+        help="Maximum matches per S1 entity emitted by disambiguate_and_guard (default: 6)",
+    )
+    parser.add_argument(
         "--device",
         default="cuda",
         help="Device to use for model inference and training (e.g. cuda or cpu, default: cuda)",
@@ -733,6 +739,20 @@ def main():
                             "country": country,
                         })
 
+        # Save scored pairs per partition chunk:
+        # cols: ['source1_id', 'candidate_id', 'prob']
+        if scored_pairs:
+            df_scored = pd.DataFrame(scored_pairs)
+            if "p_final" in df_scored.columns and "prob" not in df_scored.columns:
+                df_scored["prob"] = df_scored["p_final"]
+            cols_to_keep = [c for c in ["source1_id", "candidate_id", "prob"] if c in df_scored.columns]
+            df_scored = df_scored[cols_to_keep]
+        else:
+            df_scored = pd.DataFrame(columns=["source1_id", "candidate_id", "prob"])
+        scored_parquet_path = output_dir / f"scored_pairs_{country}.parquet"
+        df_scored.to_parquet(scored_parquet_path, compression="snappy")
+        print(f"  Saved {len(df_scored):,} scored pairs to {scored_parquet_path}", flush=True)
+
         # 4. Disambiguation and Singleton Guard
         all_s1_ids = list(s1_part["entity_id"])
         part_matches = disambiguate_and_guard(
@@ -740,6 +760,7 @@ def main():
             all_s1_ids=all_s1_ids,
             tau_singleton=tau_singleton,
             tau_secondary=tau_secondary,
+            max_matches=args.max_matches,
         )
 
         # Stream write matching results

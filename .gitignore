@@ -102,7 +102,12 @@ runs/
 student_resource/dataset/
 output/
 output_smoketest/
+output_full/
 models/
+models_500k/
+models_full/
+*.parquet
+*.npz
 *.log
 catboost_info/
 scripts/run_bg.sh

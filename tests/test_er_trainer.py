@@ -153,7 +153,7 @@ def test_er_ensemble_trainer_fit_and_predict():
     y = (X[:, 0] > 0.0).astype(np.int32)
     s1_groups = [f"S1-{i // 3}" for i in range(N)]
 
-    trainer = EREnsembleTrainer(models=["lgbm", "catboost", "xgboost"], n_splits=3, seed=42)
+    trainer = EREnsembleTrainer(models=["xgboost", "catboost"], n_splits=3, seed=42)
     trainer.train(X, y, s1_groups)
 
     probs_val, val_idx = trainer.predict_val_proba(X)

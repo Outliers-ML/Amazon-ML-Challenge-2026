@@ -327,3 +327,27 @@ def test_none_all_s1_ids():
     results = disambiguate_and_guard(scored_pairs, all_s1_ids=None)
     assert "S1-Z" in results
     assert results["S1-Z"] == ["S2-Z"]
+
+
+def test_max_matches_capping():
+    """Verify max_matches caps candidate assignment to specified limit (default 6)."""
+    scored_pairs = [
+        {"source1_id": "S1-A", "candidate_id": f"S2-{i:03d}", "p_final": 0.90 - i * 0.02, "country": "US"}
+        for i in range(10)
+    ]
+    all_s1 = ["S1-A"]
+
+    # Default max_matches=6
+    res_default = disambiguate_and_guard(scored_pairs, all_s1)
+    assert len(res_default["S1-A"]) == 6
+    assert res_default["S1-A"] == [f"S2-{i:03d}" for i in range(6)]
+
+    # Explicit max_matches=4
+    res_4 = disambiguate_and_guard(scored_pairs, all_s1, max_matches=4)
+    assert len(res_4["S1-A"]) == 4
+    assert res_4["S1-A"] == [f"S2-{i:03d}" for i in range(4)]
+
+    # max_matches=None (unbounded)
+    res_none = disambiguate_and_guard(scored_pairs, all_s1, max_matches=None)
+    assert len(res_none["S1-A"]) == 10
+
