@@ -330,17 +330,22 @@ def test_none_all_s1_ids():
 
 
 def test_max_matches_capping():
-    """Verify max_matches caps candidate assignment to specified limit (default 6)."""
+    """Verify max_matches caps candidate assignment to specified limit (default 15)."""
     scored_pairs = [
         {"source1_id": "S1-A", "candidate_id": f"S2-{i:03d}", "p_final": 0.90 - i * 0.02, "country": "US"}
         for i in range(10)
     ]
     all_s1 = ["S1-A"]
 
-    # Default max_matches=6
+    # Default max_matches=15: all 10 candidates pass (10 < 15)
     res_default = disambiguate_and_guard(scored_pairs, all_s1)
-    assert len(res_default["S1-A"]) == 6
-    assert res_default["S1-A"] == [f"S2-{i:03d}" for i in range(6)]
+    assert len(res_default["S1-A"]) == 10
+    assert res_default["S1-A"] == [f"S2-{i:03d}" for i in range(10)]
+
+    # Explicit max_matches=6 caps correctly
+    res_6 = disambiguate_and_guard(scored_pairs, all_s1, max_matches=6)
+    assert len(res_6["S1-A"]) == 6
+    assert res_6["S1-A"] == [f"S2-{i:03d}" for i in range(6)]
 
     # Explicit max_matches=4
     res_4 = disambiguate_and_guard(scored_pairs, all_s1, max_matches=4)

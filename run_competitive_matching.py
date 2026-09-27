@@ -7,7 +7,7 @@ CONFIG = {
     'India':  {'sing': 0.46, 'sec': 0.52},
     'US':     {'sing': 0.55, 'sec': 0.60}
 }
-MAX_MATCHES = 6
+MAX_MATCHES = 15
 
 print("============================================================")
 print("Running Global Competitive 1-to-1 Bipartite Matching")

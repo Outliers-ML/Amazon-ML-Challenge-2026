@@ -51,7 +51,7 @@ def disambiguate_and_guard(
     all_s1_ids: Optional[Sequence[str]] = None,
     tau_singleton: float = 0.74,
     tau_secondary: float = 0.60,
-    max_matches: Optional[int] = 6,
+    max_matches: Optional[int] = 15,
     enforce_prefix: bool = True,
 ) -> Dict[str, List[str]]:
     """Resolve candidate pairs using bipartite matching and post-pruning singleton guard.

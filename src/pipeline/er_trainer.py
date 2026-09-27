@@ -293,25 +293,60 @@ def optimize_f05_threshold(
     probs: np.ndarray,
     gt_map: Dict[str, Any],
     tau_steps: int = 25,
-    min_tau: float = 0.50,
-    max_tau: float = 0.95,
+    min_tau: float = 0.30,
+    max_tau: float = 0.90,
+    max_matches: Optional[int] = 15,
     return_curve: bool = False,
+    use_real_disambiguation: bool = True,
+    countries: Optional[Sequence[str]] = None,
 ) -> Tuple[float, float] | Tuple[float, float, List[float], List[float]]:
-    """Find threshold tau* in [min_tau, max_tau] maximizing macro F_0.5."""
+    """Find threshold tau* in [min_tau, max_tau] maximizing macro F_0.5.
+
+    When use_real_disambiguation=True (default), scores each threshold using
+    the actual deployed disambiguate_and_guard function (bipartite matching +
+    singleton guard + max_matches cap) instead of naive prob >= tau.
+    """
+    from src.pipeline.post_processing import disambiguate_and_guard
+
     if not (len(s1_ids) == len(cand_ids) == len(probs)):
         raise ValueError(
             f"Mismatched input lengths: len(s1_ids)={len(s1_ids)}, "
             f"len(cand_ids)={len(cand_ids)}, len(probs)={len(probs)}"
         )
 
+    all_s1_ids_list = sorted(gt_map.keys())
+
     thresholds = [float(t) for t in np.linspace(min_tau, max_tau, tau_steps)]
     scores = []
     for tau in thresholds:
-        pred_map: Dict[str, List[str]] = {s1: [] for s1 in gt_map.keys()}
-        mask = probs >= tau
-        for s1, cand, keep in zip(s1_ids, cand_ids, mask):
-            if keep and s1 in pred_map:
-                pred_map[s1].append(cand)
+        if use_real_disambiguation:
+            # Build scored_pairs list for disambiguate_and_guard
+            scored_pairs = []
+            for s1, cand, p in zip(s1_ids, cand_ids, probs):
+                if float(p) >= tau * 0.7:  # Buffer below tau to let disambiguation decide
+                    country = countries[len(scored_pairs) % len(countries)] if countries else ""
+                    scored_pairs.append({
+                        "source1_id": s1,
+                        "candidate_id": cand,
+                        "p_final": float(p),
+                        "country": country if countries else "",
+                    })
+
+            pred_map = disambiguate_and_guard(
+                scored_pairs=scored_pairs,
+                all_s1_ids=all_s1_ids_list,
+                tau_singleton=tau,
+                tau_secondary=tau * 0.85,
+                max_matches=max_matches,
+                enforce_prefix=False,
+            )
+        else:
+            # Legacy naive mode for backwards compatibility
+            pred_map: Dict[str, List[str]] = {s1: [] for s1 in gt_map.keys()}
+            mask = probs >= tau
+            for s1, cand, keep in zip(s1_ids, cand_ids, mask):
+                if keep and s1 in pred_map:
+                    pred_map[s1].append(cand)
 
         score = compute_macro_f05(gt_map, pred_map)
         scores.append(score)
@@ -324,6 +359,54 @@ def optimize_f05_threshold(
     if return_curve:
         return best_tau, best_score, thresholds, scores
     return best_tau, best_score
+
+
+def optimize_f05_threshold_per_country(
+    s1_ids: Sequence[str],
+    cand_ids: Sequence[str],
+    probs: np.ndarray,
+    gt_map: Dict[str, Any],
+    s1_country_map: Dict[str, str],
+    tau_steps: int = 25,
+    min_tau: float = 0.30,
+    max_tau: float = 0.90,
+    max_matches: Optional[int] = 15,
+) -> Dict[str, Tuple[float, float]]:
+    """Calibrate per-country thresholds using the real disambiguation function.
+
+    Returns dict mapping country -> (best_tau, best_score).
+    """
+    # Group validation data by country
+    country_data: Dict[str, Tuple[List[str], List[str], List[float], Dict[str, Any]]] = {}
+    for s1, cand, p in zip(s1_ids, cand_ids, probs):
+        country = s1_country_map.get(s1, "UNKNOWN")
+        if country not in country_data:
+            country_data[country] = ([], [], [], {})
+        country_data[country][0].append(s1)
+        country_data[country][1].append(cand)
+        country_data[country][2].append(float(p))
+
+    # Build per-country ground truth
+    for s1, gt_targets in gt_map.items():
+        country = s1_country_map.get(s1, "UNKNOWN")
+        if country not in country_data:
+            country_data[country] = ([], [], [], {})
+        country_data[country][3][s1] = gt_targets
+
+    results: Dict[str, Tuple[float, float]] = {}
+    for country, (c_s1, c_cand, c_probs, c_gt) in country_data.items():
+        if not c_gt:
+            continue
+        c_probs_arr = np.array(c_probs)
+        best_tau, best_score = optimize_f05_threshold(
+            c_s1, c_cand, c_probs_arr, c_gt,
+            tau_steps=tau_steps, min_tau=min_tau, max_tau=max_tau,
+            max_matches=max_matches, use_real_disambiguation=True,
+        )
+        results[country] = (best_tau, best_score)
+        print(f"  [Country={country}] Calibrated tau*={best_tau:.4f}, F0.5={best_score:.4f} ({len(c_gt)} entities)")
+
+    return results
 
 
 class ERModelTrainer:

@@ -40,6 +40,7 @@ from src.pipeline.er_trainer import (
     compute_meta_probability,
     filter_candidates_for_cross_encoder,
     optimize_f05_threshold,
+    optimize_f05_threshold_per_country,
 )
 from src.pipeline.post_processing import disambiguate_and_guard, write_matching_results
 from src.utils.experiment_tracker import ExperimentTracker
@@ -223,8 +224,8 @@ def main():
     parser.add_argument(
         "--max-matches",
         type=int,
-        default=6,
-        help="Maximum matches per S1 entity emitted by disambiguate_and_guard (default: 6)",
+        default=15,
+        help="Maximum matches per S1 entity emitted by disambiguate_and_guard (default: 15)",
     )
     parser.add_argument(
         "--device",
@@ -281,6 +282,7 @@ def main():
 
     blocker = MultiTierBlocker(max_candidates=args.max_candidates, max_postings=args.max_postings)
     extractor = PairwiseFeatureExtractor()
+    per_country_thresholds = {}  # Will be populated by calibration or loaded from model pickle
 
     # =========================================================================
     # Stage 1: Training & Threshold Calibration
@@ -297,6 +299,7 @@ def main():
             model = model_data["model"]
             best_tau = float(model_data["best_tau"])
             best_score = float(model_data.get("best_score", 0.0))
+            per_country_thresholds = model_data.get("per_country_thresholds", {})
             pair_s1_rows = model_data.get("pair_s1_rows", [])
             y_list = model_data.get("y_list", [])
         print(f"[+] Loaded pre-trained model: optimal tau* = {best_tau:.4f} (validation Macro F_0.5 = {best_score:.4f})")
@@ -454,6 +457,17 @@ def main():
             )
             print(f"[+] Optimal threshold tau* = {best_tau:.4f} with validation Macro F_0.5 = {best_score:.4f}")
 
+            # Per-country threshold calibration (Bug 3 fix)
+            s1_country_map = {}
+            for _, row in train_s1.iterrows():
+                s1_country_map[row["entity_id"]] = row.get("country", "UNKNOWN") or "UNKNOWN"
+            per_country_thresholds = optimize_f05_threshold_per_country(
+                val_s1, val_cands, probs_val_blocker, val_gt_map,
+                s1_country_map=s1_country_map,
+                max_matches=args.max_matches,
+            )
+            print(f"[+] Per-country thresholds: {per_country_thresholds}")
+
             if tracker:
                 tracker.log_threshold_curve(tau_curve, score_curve)
                 if hasattr(model, "feature_importances_") and len(model.feature_importances_) > 0:
@@ -464,6 +478,7 @@ def main():
             best_tau = 0.50
             best_score = 0.0
             model = None
+            per_country_thresholds = {}
 
         if args.save_model:
             save_p = Path(args.save_model)
@@ -475,6 +490,7 @@ def main():
                     "model": model,
                     "best_tau": best_tau,
                     "best_score": best_score,
+                    "per_country_thresholds": per_country_thresholds if 'per_country_thresholds' in locals() else {},
                     "pair_s1_rows": pair_s1_rows if 'pair_s1_rows' in locals() else [],
                     "y_list": y_list if 'y_list' in locals() else [],
                 }, f)
@@ -544,8 +560,22 @@ def main():
         print(f"[+] Initializing Cross-Encoder reranker: {ce_model_path}")
         reranker = CrossEncoderReranker(model_name=ce_model_path)
 
-    tau_singleton = args.tau if args.tau is not None else args.tau_singleton
-    tau_secondary = args.tau_secondary
+    # CRITICAL FIX: Wire calibrated best_tau into deployed thresholds.
+    # Previously best_tau was computed/loaded but thrown away — tau_singleton
+    # and tau_secondary fell through to hardcoded argparse defaults (0.74/0.60).
+    if args.tau is not None:
+        # Explicit --tau override takes precedence
+        tau_singleton = args.tau
+        tau_secondary = args.tau_secondary
+    elif '--tau-singleton' in sys.argv or '--tau_singleton' in sys.argv:
+        # User explicitly set --tau-singleton on CLI
+        tau_singleton = args.tau_singleton
+        tau_secondary = args.tau_secondary
+    else:
+        # Auto-derive from calibrated best_tau (the whole point of calibration)
+        tau_singleton = best_tau
+        tau_secondary = best_tau * 0.85  # Secondary threshold slightly below primary
+        print(f"[+] Using calibrated thresholds: tau_singleton={tau_singleton:.4f}, tau_secondary={tau_secondary:.4f} (derived from best_tau={best_tau:.4f})")
 
     partition_summaries: Dict[str, Dict[str, int]] = {}
 
@@ -755,11 +785,22 @@ def main():
 
         # 4. Disambiguation and Singleton Guard
         all_s1_ids = list(s1_part["entity_id"])
+
+        # Use per-country calibrated thresholds if available (Bug 3 fix)
+        if per_country_thresholds and country in per_country_thresholds:
+            country_tau, country_score = per_country_thresholds[country]
+            p_tau_singleton = country_tau
+            p_tau_secondary = country_tau * 0.85
+            print(f"    Using per-country thresholds for '{country}': tau_singleton={p_tau_singleton:.4f}, tau_secondary={p_tau_secondary:.4f} (F0.5={country_score:.4f})")
+        else:
+            p_tau_singleton = tau_singleton
+            p_tau_secondary = tau_secondary
+
         part_matches = disambiguate_and_guard(
             scored_pairs=scored_pairs,
             all_s1_ids=all_s1_ids,
-            tau_singleton=tau_singleton,
-            tau_secondary=tau_secondary,
+            tau_singleton=p_tau_singleton,
+            tau_secondary=p_tau_secondary,
             max_matches=args.max_matches,
         )
 

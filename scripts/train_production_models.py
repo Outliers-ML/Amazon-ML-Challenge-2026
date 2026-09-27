@@ -27,7 +27,7 @@ import torch
 from src.data.blocking import MultiTierBlocker
 from src.features.pairwise_features import PairwiseFeatureExtractor
 from src.models.cross_encoder import BinaryFocalLoss, CrossEncoderReranker, format_pair_text
-from src.pipeline.er_trainer import EREnsembleTrainer, mine_hard_negatives, optimize_f05_threshold
+from src.pipeline.er_trainer import EREnsembleTrainer, mine_hard_negatives, optimize_f05_threshold, optimize_f05_threshold_per_country
 
 
 def load_ground_truth(gt_path: Path) -> Dict[str, Set[str]]:
@@ -376,6 +376,19 @@ def main():
     print(f"  Optimal Decision Threshold tau* = {best_tau:.4f}")
     print(f"  Validation Macro F_0.5 = {best_score:.4f}")
 
+    # Per-country threshold calibration
+    tr_s1_path = train_dir / "train_source1.tsv"
+    if tr_s1_path.exists():
+        _train_s1_for_map = pd.read_csv(tr_s1_path, sep="\t", dtype=str, usecols=["entity_id", "country"]).fillna("")
+        s1_country_map = dict(zip(_train_s1_for_map["entity_id"], _train_s1_for_map["country"].fillna("UNKNOWN")))
+    else:
+        s1_country_map = {}
+    per_country_thresholds = optimize_f05_threshold_per_country(
+        val_s1, val_cands, probs_val, val_gt_map,
+        s1_country_map=s1_country_map,
+    )
+    print(f"  Per-country thresholds: {per_country_thresholds}")
+
     # Save models
     ensemble_save_path = output_dir / "ensemble_model.pkl"
     models_saved_path = models_saved_dir / "ensemble_model.pkl"
@@ -384,6 +397,7 @@ def main():
         "model": trainer,
         "best_tau": best_tau,
         "best_score": best_score,
+        "per_country_thresholds": per_country_thresholds,
         "feature_names": PairwiseFeatureExtractor.FEATURE_NAMES,
         "weights": trainer.weights,
         "models": trainer.model_names,
