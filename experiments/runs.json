@@ -985,5 +985,49 @@
       }
     },
     "duration_seconds": 5704.65
+  },
+  {
+    "run_id": "run-20260927-100630-14f528",
+    "run_name": "Baseline-LGBM",
+    "timestamp": "2026-09-27T10:06:30.141365+00:00",
+    "params": {
+      "model_type": "LightGBM",
+      "sample_train_s1": 50000,
+      "max_candidates": 25,
+      "max_postings": 500,
+      "n_splits": 5,
+      "seed": 42,
+      "infer_chunk_size": 50000,
+      "ensemble": false,
+      "use_cross_encoder": false,
+      "cross_encoder_model": null,
+      "ce_cutoff": 0.12,
+      "ce_max_keep": 8,
+      "use_gpu_gbdt": false
+    },
+    "metrics": {
+      "macro_f05": 0.975857410866808,
+      "best_tau": 0.7250000000000001,
+      "train_pairs": 0,
+      "train_positives": 0,
+      "total_test_s1": 20000,
+      "total_test_matched": 19581,
+      "total_test_singletons": 419
+    },
+    "feature_importances": {},
+    "threshold_curve": {},
+    "partition_summary": {
+      "India": {
+        "total": 8004,
+        "matched": 7903,
+        "singletons": 101
+      },
+      "US": {
+        "total": 11996,
+        "matched": 11678,
+        "singletons": 318
+      }
+    },
+    "duration_seconds": 469.68
   }
 ]

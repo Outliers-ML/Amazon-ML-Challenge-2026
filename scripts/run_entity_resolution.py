@@ -593,6 +593,16 @@ def main():
         print(f"\nProcessing partition [{p_idx + 1}/{len(unique_test_countries)}] — Country: '{country}' "
               f"(S1: {len(s1_part):,}, S2: {len(s2_part):,}, S3: {len(s3_part):,})...", flush=True)
 
+        # Use per-country calibrated thresholds if available
+        if per_country_thresholds and country in per_country_thresholds:
+            country_tau, country_score = per_country_thresholds[country]
+            p_tau_singleton = country_tau
+            p_tau_secondary = country_tau * 0.85
+            print(f"    [!] Using per-country thresholds for '{country}': tau_singleton={p_tau_singleton:.4f}, tau_secondary={p_tau_secondary:.4f} (F0.5={country_score:.4f})")
+        else:
+            p_tau_singleton = tau_singleton
+            p_tau_secondary = tau_secondary
+
         # 1. Blocking
         part_cands = blocker.block_country_partition(s1_part, s2_part, s3_part)
         # Ensure all S1 entities in partition have an entry
@@ -648,7 +658,7 @@ def main():
                 p_xgb_arr = chunk_probs
                 p_cat_arr = chunk_probs
 
-            min_buffer_threshold = min(args.ce_cutoff, tau_secondary) if args.use_cross_encoder else tau_secondary
+            min_buffer_threshold = min(args.ce_cutoff, p_tau_secondary) if args.use_cross_encoder else p_tau_secondary
             for s_id, c_id, p_gbdt, p_xgb, p_cat in zip(
                 batch_s1_ids, batch_cand_ids, chunk_probs, p_xgb_arr, p_cat_arr
             ):
@@ -727,7 +737,7 @@ def main():
                             p_xgb=cand_info["p_xgb"],
                             p_cat=cand_info["p_cat"],
                         )
-                        if p_final >= tau_secondary:
+                        if p_final >= p_tau_secondary:
                             scored_pairs.append({
                                 "source1_id": s1_id,
                                 "candidate_id": cand_info["cand_id"],
@@ -761,7 +771,7 @@ def main():
                         p_xgb=cand_info["p_xgb"],
                         p_cat=cand_info["p_cat"],
                     )
-                    if p_final >= tau_secondary:
+                    if p_final >= p_tau_secondary:
                         scored_pairs.append({
                             "source1_id": s1_id,
                             "candidate_id": cand_info["cand_id"],
