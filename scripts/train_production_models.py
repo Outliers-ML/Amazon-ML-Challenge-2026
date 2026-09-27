@@ -138,6 +138,28 @@ def main():
         y_train = cdata["y_train"]
         s1_groups = cdata["s1_groups"].tolist()
         cand_ids_mined = cdata["cand_ids_mined"].tolist()
+        
+        # Subsample by entity to avoid 16GB RSS ulimit OOM
+        MAX_ROWS = 8000000
+        if len(X_train) > MAX_ROWS:
+            print(f"  Subsampling from {len(X_train)} to ~{MAX_ROWS} rows to prevent OOM...")
+            
+            # Subsample by S1 entity to preserve GroupKFold and validation validity
+            unique_s1 = np.unique(s1_groups)
+            # Estimate how many entities we need (average rows per entity)
+            rows_per_entity = len(X_train) / len(unique_s1)
+            target_entities = int(MAX_ROWS / rows_per_entity)
+            
+            sampled_s1 = set(np.random.choice(unique_s1, target_entities, replace=False))
+            
+            # Create boolean mask
+            mask = np.array([s in sampled_s1 for s in s1_groups])
+            
+            X_train = X_train[mask]
+            y_train = y_train[mask]
+            s1_groups = [s for s, m in zip(s1_groups, mask) if m]
+            cand_ids_mined = [c for c, m in zip(cand_ids_mined, mask) if m]
+
         tr_gt_path = train_dir / "train_ground_truth.tsv"
         gt_map = load_ground_truth(tr_gt_path)
         print(f"  Loaded X_train shape: {X_train.shape}, y_train: {y_train.shape} in {time.time()-t_load:.1f}s")
