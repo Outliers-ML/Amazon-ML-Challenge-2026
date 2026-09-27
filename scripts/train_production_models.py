@@ -162,6 +162,8 @@ def main():
 
         tr_gt_path = train_dir / "train_ground_truth.tsv"
         gt_map = load_ground_truth(tr_gt_path)
+        s1_set = set(s1_groups)
+        gt_map = {eid: gt_map.get(eid, set()) for eid in s1_set}
         print(f"  Loaded X_train shape: {X_train.shape}, y_train: {y_train.shape} in {time.time()-t_load:.1f}s")
     elif cached_pkl.exists():
         print(f"\n[+] Found cached training data at {cached_pkl}! Loading to skip Steps 1-4 & feature extraction...")
@@ -174,6 +176,8 @@ def main():
         cand_ids_mined = cdata["cand_ids_mined"]
         tr_gt_path = train_dir / "train_ground_truth.tsv"
         gt_map = load_ground_truth(tr_gt_path)
+        s1_set = set(s1_groups)
+        gt_map = {eid: gt_map.get(eid, set()) for eid in s1_set}
         print(f"  Loaded X_train shape: {X_train.shape}, y_train: {y_train.shape} in {time.time()-t_load:.1f}s")
     else:
         # 1. Load Data
@@ -203,10 +207,15 @@ def main():
                 train_s1 = train_s1.sample(n=args.sample_s1, random_state=args.seed).reset_index(drop=True)
             print(f"  Sampled {len(train_s1):,} S1 entities in {time.time()-t0:.1f}s")
 
+        # Crucial fix: filter gt_map strictly to the (sampled) S1 entities so hard negative mining
+        # only mines for entities that were actually sampled and blocked!
+        gt_map = {eid: gt_map.get(eid, set()) for eid in train_s1["entity_id"]}
+        print(f"  Filtered ground truth to {len(gt_map):,} entities in sampled S1.", flush=True)
+
         # 2. Multi-Tier Candidate Blocking
         t_block = time.time()
         print("\n[Step 2/5] Running MultiTierBlocker across country partitions...")
-        blocker = MultiTierBlocker(max_candidates=35, bucket_ceiling=250)
+        blocker = MultiTierBlocker(max_candidates=25, max_postings=500)
         train_cands: Dict[str, List[str]] = {}
 
         train_countries = train_s1["country"].fillna("UNKNOWN").unique()
@@ -237,7 +246,7 @@ def main():
             t_p = time.time()
             cands_p = blocker.block_country_partition(s1_p, s2_p, s3_p)
             train_cands.update(cands_p)
-            print(f"    -> Done in {time.time()-t_p:.1f}s. Generated candidates for {len(cands_p):,} entities.", flush=True)
+            print(f"    -> Done in {time.time()-t_p:.1f}s. Generated candidates for {len(cands_p):,} entities (total cands: {sum(len(v) for v in cands_p.values())}).", flush=True)
 
         print(f"  Total blocking completed in {time.time()-t_block:.1f}s")
 
@@ -258,8 +267,8 @@ def main():
         n_pos = sum(y_mined)
         n_neg = len(y_mined) - n_pos
 
-        print(f"  Total pairs mined: {len(mined_tuples):,} (Positives: {n_pos:,}, Hard Negatives: {n_neg:,}, Ratio: {n_neg/max(1,n_pos):.2f}:1)")
-        print(f"  Mining completed in {time.time()-t_mine:.1f}s")
+        print(f"  Total pairs mined: {len(mined_tuples):,} (Positives: {n_pos:,}, Hard Negatives: {n_neg:,}, Ratio: {n_neg/max(1,n_pos):.2f}:1)", flush=True)
+        print(f"  Mining completed in {time.time()-t_mine:.1f}s", flush=True)
 
         # Index referenced records for fast lookup
         print("  Indexing candidate record attributes...")
