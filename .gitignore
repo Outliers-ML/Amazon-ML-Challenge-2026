@@ -106,6 +106,8 @@ output_full/
 models/
 models_500k/
 models_full/
+models_mini/
+output_mini_eval/
 *.parquet
 *.npz
 *.log
